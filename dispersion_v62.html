@@ -1,0 +1,1861 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+ Nom          : Simulation de dispersion balistique et gazeuse
+ Fichier      : dispersion_v62.html
+ Version      : 6.3
+ Date         : 17/10/2026
+ Auteur       : Eric Perret
+ Langage      : HTML / CSS / JavaScript (aucune librairie)
+ Dépendances  : météo open-meteo.com (en ligne, sans clé),
+                imagerie Esri World Imagery + étiquettes Esri Boundaries
+                and Places (en ligne, sans clé, © Esri © Maxar)
+--------------------------------------------------------------------------------
+ Historique
+ 6.0  Balistique RK45, Pasquill-Gifford A→F, profil de vent open-meteo,
+      Web Workers, CSP stricte
+ 6.1  Carte tactile : déplacement à un doigt, zoom par pincement
+ 6.2  Fond de carte sans clé ni API : imagerie Esri World Imagery et
+      étiquettes Esri (frontières, lieux) ; tuiles CARTO retirées ; CSP
+      limitée à server.arcgisonline.com pour les images
+ 6.3  Charte graphique AZS : palette ardoise / ambre / cyan, en-tête AZS
+      avec lien de retour vers www.azs.fr, typographie sans-serif + chiffres
+      monospace, repère du pas de tir et encart polluants en ambre
+================================================================================
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'unsafe-inline' blob:;
+  worker-src blob:;
+  connect-src https://api.open-meteo.com;
+  img-src data: https://server.arcgisonline.com;
+  style-src 'unsafe-inline';
+">
+<title>Simulation de dispersion avec profilage de vent temps réel</title>
+<style>
+  /* ---------- charte AZS (www.azs.fr) ---------- */
+  :root{
+    --bg:#0e1418; --panel:rgba(24,34,42,.94); --panel2:#141c22; --ink:#dfe7ec; --mute:#8fa1ad;
+    --accent:#f0a63a; --accent2:#ffcf7a; --cyan:#5cc8d6; --line:#26343e;
+    --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:13px/1.45 var(--sans);overflow:hidden}
+  #map{position:absolute;inset:0;cursor:grab}
+  #map.drag{cursor:grabbing}
+  aside{position:absolute;top:16px;left:16px;width:324px;background:var(--panel);
+    border:1px solid var(--line);border-radius:8px;padding:16px;
+    box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 14px 34px -16px rgba(0,0,0,.85);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:14px;
+    max-height:calc(100% - 32px);overflow-y:auto;z-index:10}
+  .tete{display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+  .azs{font:800 22px/1 var(--mono);letter-spacing:-1px;color:var(--accent);text-decoration:none;
+    padding-right:11px;border-right:1px solid var(--line)}
+  .azs:hover{color:var(--accent2)}
+  h1{font:700 14px/1.25 var(--sans);margin:0;color:var(--ink);letter-spacing:-.1px;white-space:nowrap}
+  h1 small{display:block;white-space:normal;font:500 11px/1.3 var(--mono);color:var(--mute);letter-spacing:.02em;margin-top:4px}
+  .badge{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--accent);border-radius:999px;
+    font:600 10px/1.5 var(--mono);color:var(--accent);vertical-align:2px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font:600 10.5px var(--mono);color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+  .field .row{display:flex;align-items:center;gap:8px}
+  input[type=range]{flex:1;accent-color:var(--accent)}
+  input[type=number],select{width:78px;background:var(--panel2);color:var(--ink);
+    border:1px solid var(--line);padding:5px 7px;font:12px var(--mono);border-radius:6px}
+  input[type=number]:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  select{width:100%}
+  button{background:var(--accent);color:#111;border:0;padding:10px;
+    font:700 13px var(--sans);cursor:pointer;border-radius:6px;transition:filter .15s,border-color .15s,color .15s}
+  button:hover{filter:brightness(1.1)}
+  button.sec{background:transparent;color:var(--mute);border:1px solid var(--line);font:600 12px var(--mono);padding:7px 10px}
+  button.sec:hover{filter:none;color:var(--ink);border-color:var(--accent)}
+  button:disabled{opacity:.4;cursor:wait}
+  .btnrow{display:grid;grid-template-columns:1fr auto;gap:6px}
+  .status{font:11px var(--mono);color:var(--mute);min-height:1.3em}
+  .auto{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;
+    display:flex;flex-direction:column;gap:3px}
+  .auto .lbl{font:600 10px var(--mono);color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+  .auto .val{font:600 14px var(--mono);color:var(--cyan)}
+  table.balles{width:100%;border-collapse:collapse;font:11px var(--mono)}
+  table.balles th{font-weight:600;color:var(--mute);text-transform:uppercase;
+    font-size:10px;letter-spacing:.05em;text-align:left;padding:4px;border-bottom:1px solid var(--line)}
+  table.balles td{padding:4px;border-bottom:1px solid var(--line)}
+  table.balles td:first-child{color:var(--ink);font-family:var(--sans);font-size:12px}
+  .stats{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:4px}
+  .stats div{display:flex;justify-content:space-between;gap:10px;font-size:12px}
+  .stats span:first-child{color:var(--mute)}
+  .stats span:last-child{font-family:var(--mono);text-align:right}
+  .copyright{font:10px/1.6 var(--mono);color:var(--mute);text-align:center;
+    border-top:1px solid var(--line);padding-top:8px;margin-top:4px;letter-spacing:.02em}
+  .copyright a{color:var(--mute)} .copyright a:hover{color:var(--accent)}
+  .attrib{position:absolute;bottom:4px;right:8px;font:10px var(--mono);color:#000;
+    background:rgba(255,255,255,.7);padding:1px 5px;border-radius:3px;z-index:10}
+  .attrib a{color:#000}
+  @media (max-width:420px){ aside{left:8px;right:8px;width:auto;top:8px;max-height:calc(100% - 16px)} }
+</style>
+</head>
+<body>
+
+<canvas id="map"></canvas>
+
+<aside>
+  <div class="tete">
+    <a class="azs" href="https://www.azs.fr/" title="www.azs.fr">AZS</a>
+    <h1>Simulation de dispersion<span class="badge">v6.3</span><small id="h1sub">—</small></h1>
+  </div>
+
+  <div class="field">
+    <label>Pas de tir</label>
+    <select id="pas"></select>
+  </div>
+
+  <div class="field">
+    <label>Altitude explosion (m)</label>
+    <div class="row">
+      <input type="range" id="alt" min="500" max="50000" step="500" value="10000">
+      <input type="number" id="altN" min="500" max="50000" step="500" value="10000">
+    </div>
+  </div>
+
+  <div class="auto">
+    <div class="lbl">Vitesse fusée / inclinaison</div>
+    <div class="val"><span id="vAuto">—</span> · <span id="pAuto">—</span></div>
+  </div>
+
+  <div class="field">
+    <label>Grains testés (édition dans le code)</label>
+    <table class="balles" id="tblBalles">
+      <thead><tr><th>Type</th><th>Cd₀</th><th>m (g)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="field">
+    <label>Stabilité atmosphérique (Pasquill-Gifford)</label>
+    <select id="pgClasse"></select>
+  </div>
+
+  <div class="btnrow">
+    <button id="run">Calculer</button>
+    <button class="sec" id="reload" title="Recharger la météo">↻ météo</button>
+  </div>
+  <div class="status" id="status">prêt.</div>
+
+  <div class="stats" id="stats" style="display:none">
+    <div><span>Étendue azimut</span><span id="sAz">—</span></div>
+    <div><span>Aire au sol (km²)</span><span id="sAire">—</span></div>
+    <div><span>1er impact (plus rapide)</span><span id="sTFirst">—</span></div>
+    <div><span>Dernier impact (plus lent)</span><span id="sTLast">—</span></div>
+    <div><span>Heure météo</span><span id="sMet">—</span></div>
+    <div><span>QNH (hPa)</span><span id="sQnh">—</span></div>
+    <div><span>Hygro sol (%)</span><span id="sHr">—</span></div>
+    <div><span>Radiation sol (W/m²)</span><span id="sRad">—</span></div>
+    <div><span>Nébulosité (%)</span><span id="sNuage">—</span></div>
+    <div><span>Vent surface (m/s)</span><span id="sU10">—</span></div>
+    <div><span>Classe PG (auto)</span><span id="sPG">—</span></div>
+    <div><span>Calcul</span><span id="sCalc">—</span></div>
+    <div><span>Workers</span><span id="sWorkers">—</span></div>
+  </div>
+  <!-- Concentrations polluants — frontière zone sol -->
+  <div class="stats" id="statsPoll" style="display:none">
+    <div style="border-top:1px solid var(--line);padding-top:6px;margin-top:2px">
+      <span style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)">
+        Propergol P120C restant</span></div>
+    <div><span>Propergol restant</span><span id="pProp">—</span></div>
+  </div>
+  <div class="stats" id="statsPuff" style="display:none">
+    <div style="border-top:1px solid var(--line);padding-top:6px;margin-top:2px">
+      <span style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)">
+        Zone HCl explo · AEGL-1 sol</span></div>
+    <div><span>Premier contact sol</span><span id="pfTouch">—</span></div>
+    <div><span>Retour sous AEGL-1</span><span id="pfEnd">—</span></div>
+    <div><span>Dimensions zone</span><span id="pfRayon">—</span></div>
+    <div><span>Seuil contact (AEGL-1/10)</span><span id="pfSeuil">—</span></div>
+  </div>
+  <div class="copyright">© Eric Perret 2026 — profilage de vent temps réel<br><a href="https://www.azs.fr/">www.azs.fr</a> · <a href="https://github.com/ericperret/dispersion">github.com/ericperret/dispersion</a></div>
+</aside>
+
+<div class="attrib">© Esri © Maxar · étiquettes © Esri</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   PARAMÈTRES ÉDITABLES
+   ─ BALLES.cdType : 'sphere' = sphère lisse (courbe Cd(Ma) marquée
+     avec crise transsonique) ; 'blunt' = corps émoussé/irrégulier
+     (moins sensible au nombre de Mach, traînée de forme dominante).
+   ─ PROFIL_VENT_STATIQUE : null = API open-meteo (mode opérationnel).
+     Mettre un tableau [{z,wx,wy,v,dir,hPa},...] pour tester avec
+     des conditions reproductibles (ex: vent nul, profil ERA5 exporté).
+============================================================ */
+/* ============================================================
+   PAS DE TIR — coordonnées, lanceur associé, azimut orbital nominal.
+   azimut : angle par rapport au Nord (°), sens horaire.
+     0°  = plein Nord  · 90° = plein Est (équatorial)
+     45° = Nord-Est    · 186° = Sud-Sud-Ouest (orbite polaire SSO)
+   Les azimuths correspondent aux missions les plus fréquentes du pas.
+============================================================ */
+const PAS_TIRS = {
+  // ── Guyane française (CSG, Kourou) ──────────────────────────
+  'ELA-4':  { nom:'ELA-4',    lat: 5.2561, lon: -52.7686, azimut: 90, lanceur:'Ariane 6',          groupe:'CSG — Kourou, Guyane' },
+  'ELV':    { nom:'ELV',      lat: 5.2358, lon: -52.7753, azimut: 90, lanceur:'Vega / Vega-C',     groupe:'CSG — Kourou, Guyane' },
+  'ELS':    { nom:'ELS',      lat: 5.3073, lon: -52.8336, azimut: 90, lanceur:'Soyuz-ST',          groupe:'CSG — Kourou, Guyane' },
+  // ── Floride, USA (KSC / Cap Canaveral CCSFS) ────────────────
+  'LC39A':  { nom:'LC-39A',   lat:28.6083, lon: -80.6041, azimut: 45, lanceur:'Falcon Heavy / Crew Dragon', groupe:'KSC / CCSFS — Floride, USA' },
+  'SLC40':  { nom:'SLC-40',   lat:28.5618, lon: -80.5772, azimut: 45, lanceur:'Falcon 9',          groupe:'KSC / CCSFS — Floride, USA' },
+  'SLC41':  { nom:'SLC-41',   lat:28.5835, lon: -80.5830, azimut: 45, lanceur:'Atlas V / Vulcan (ULA)', groupe:'KSC / CCSFS — Floride, USA' },
+  'LC39B':  { nom:'LC-39B',   lat:28.6270, lon: -80.6208, azimut: 45, lanceur:'SLS / Artemis (NASA)', groupe:'KSC / CCSFS — Floride, USA' },
+  // ── Vandenberg SFB, Californie, USA ─────────────────────────
+  'SLC4E':  { nom:'SLC-4E',   lat:34.6321, lon:-120.6109, azimut:186, lanceur:'Falcon 9 (SSO)',    groupe:'Vandenberg SFB — Californie, USA' },
+  'SLC6':   { nom:'SLC-6',    lat:34.5819, lon:-120.6267, azimut:186, lanceur:'Delta IV Heavy (ULA)', groupe:'Vandenberg SFB — Californie, USA' },
+  // ── Baïkonour, Kazakhstan ────────────────────────────────────
+  'BK1':    { nom:'LC-1/5',   lat:45.9200, lon:  63.3420, azimut: 63, lanceur:'Soyuz / Energia',   groupe:'Baïkonour — Kazakhstan' },
+  'BK31':   { nom:'LC-31/6',  lat:45.9964, lon:  63.5640, azimut: 63, lanceur:'Soyuz-FG / Soyuz-2', groupe:'Baïkonour — Kazakhstan' },
+  // ── Plesetsk, Russie ─────────────────────────────────────────
+  'PL43':   { nom:'LC-43/3',  lat:62.9268, lon:  40.5749, azimut: 63, lanceur:'Soyuz-2',           groupe:'Plesetsk — Russie' },
+  // ── Vostochny, Russie ────────────────────────────────────────
+  'VST1':   { nom:'LC-1S',    lat:51.8848, lon: 128.3341, azimut: 63, lanceur:'Soyuz-2 / Angara',  groupe:'Vostochny — Russie' },
+  // ── Wenchang, Chine ──────────────────────────────────────────
+  'WEN1':   { nom:'LC-1 WEN', lat:19.6145, lon: 110.9514, azimut: 90, lanceur:'Longue Marche 5/7', groupe:'Wenchang — Chine' },
+  // ── Jiuquan (JSLC), Chine ────────────────────────────────────
+  'JQ921':  { nom:'LC-921',   lat:41.1180, lon: 100.2928, azimut: 63, lanceur:'LM-2F / Shenzhou',  groupe:'Jiuquan (JSLC) — Chine' },
+  // ── Xichang, Chine ───────────────────────────────────────────
+  'XC2':    { nom:'LC-2 XC',  lat:28.2463, lon: 102.0267, azimut: 90, lanceur:'LM-3A/B/C (GTO)',   groupe:'Xichang — Chine' },
+  // ── Tanegashima, Japon ───────────────────────────────────────
+  'TGMY1':  { nom:'LP-Y1',    lat:30.3995, lon: 130.9710, azimut: 90, lanceur:'H-IIA / H3',        groupe:'Tanegashima — Japon' },
+  // ── Satish Dhawan (Sriharikota), Inde ────────────────────────
+  'SDSC1':  { nom:'FLP',      lat:13.7199, lon:  80.2304, azimut: 98, lanceur:'PSLV / GSLV',       groupe:'SDSC — Sriharikota, Inde' },
+};
+
+/* Groupes pour le <select> avec <optgroup> */
+const GROUPES_PAS = [
+  'CSG — Kourou, Guyane',
+  'KSC / CCSFS — Floride, USA',
+  'Vandenberg SFB — Californie, USA',
+  'Baïkonour — Kazakhstan',
+  'Plesetsk — Russie',
+  'Vostochny — Russie',
+  'Wenchang — Chine',
+  'Jiuquan (JSLC) — Chine',
+  'Xichang — Chine',
+  'Tanegashima — Japon',
+  'SDSC — Sriharikota, Inde',
+];
+
+const BALLES = [
+  { nom:'sphère lisse',     Cd0:0.45, m:10, cdType:'sphere' },
+  { nom:'grain irrégulier', Cd0:0.85, m:2.7, cdType:'blunt'  },
+  { nom:'grain léger',      Cd0:1.00, m:1.5, cdType:'blunt'  }
+];
+
+const VENT_PERTURB = 0.15;   // ±15 % sur l'amplitude du vent
+const N_PTS        = 180;     // points sur l'enveloppe (perf vs précision)
+
+// Profil de vent statique pour tests reproductibles.
+// null = utiliser l'API. Exemple vent nul :
+// const PROFIL_VENT_STATIQUE = [{z:0,wx:0,wy:0,v:0,dir:0,hPa:1000},{z:50000,wx:0,wy:0,v:0,dir:0,hPa:50}];
+const PROFIL_VENT_STATIQUE = null;
+
+// Humidité relative au sol pour la correction air humide.
+// Kourou (Guyane équatoriale) : ~80 % en moyenne annuelle.
+// L'humidité réduit la densité de l'air de ~1-2 % au sol (vapeur d'eau
+// plus légère que N₂/O₂), ce qui diminue légèrement la traînée.
+// Effet négligeable au-dessus de ~5 km (hauteur d'échelle humidité ~2 km).
+const HR_SOL = 0.80;   // humidité relative au sol [0-1]
+
+/* ============================================================
+   CONSTANTES (thread principal)
+============================================================ */
+let SITE = PAS_TIRS['ELA-4'];
+// AZIMUT : mis à jour à chaque changement de pas de tir
+let AZIMUT = SITE.azimut * Math.PI / 180;
+const NIVEAUX_HPA  = [1000,950,900,850,800,700,600,500,400,300,250,200,150,100,70,50];
+const D_BALLE  = 0.040;
+const A_BALLE  = Math.PI*(D_BALLE/2)**2;   // section frontale m²
+const SOL      = 100;                        // altitude d'arrêt m
+const RAYON_DISP = 1000;                     // rayon cercle de dispersion m
+
+/* ============================================================
+   PASQUILL-GIFFORD — coefficients σ_y et σ_z par classe A→F
+   Source : Turner (1970) / Gifford (1976), repris dans Seinfeld & Pandis.
+   σ_y(x) = sy_a · x^0.886
+   σ_z(x) = sz_a · x^sz_b   (exposant variable selon classe)
+   x en mètres, σ en mètres.
+   Classe C = référence courante (tropical instable, journée CSG).
+============================================================ */
+const PG_CLASSES = {
+  'A': { label:'A — très instable (journée ensoleillée, vent faible)',  sy_a:0.493, sz_a:0.209, sz_b:1.023 },
+  'B': { label:'B — instable (journée ensoleillée, vent modéré)',       sy_a:0.337, sz_a:0.154, sz_b:0.996 },
+  'C': { label:'C — légèrement instable (CSG journée, défaut)',         sy_a:0.209, sz_a:0.177, sz_b:0.823 },
+  'D': { label:'D — neutre (ciel couvert ou nuit venteuse)',            sy_a:0.128, sz_a:0.110, sz_b:0.686 },
+  'E': { label:'E — légèrement stable (nuit, vent modéré)',             sy_a:0.091, sz_a:0.067, sz_b:0.600 },
+  'F': { label:'F — stable (nuit calme, inversion)',                    sy_a:0.067, sz_a:0.047, sz_b:0.566 },
+};
+
+/* Retourne la classe PG depuis les données météo surface.
+   Appelée au clic si le select est sur AUTO. */
+function whatIsGifford(meteo){
+  const u10   = meteo.u10   ?? 5;
+  const rad   = meteo.rad_sw ?? 0;
+  const nuage = meteo.nuage  ?? 50;
+  if (rad < 10){ // nuit
+    if (u10 < 2) return nuage > 50 ? 'E' : 'F';
+    if (u10 < 3) return nuage > 50 ? 'D' : 'E';
+    return 'D';
+  }
+  if (nuage > 80) return 'D'; // ciel couvert
+  const insol = rad > 600 ? 3 : rad > 300 ? 2 : 1;
+  if (u10 < 2) return insol === 3 ? 'A' : 'B';
+  if (u10 < 3) return insol === 3 ? 'A' : insol === 2 ? 'B' : 'C';
+  if (u10 < 5) return insol === 3 ? 'B' : 'C';
+  if (u10 < 6) return insol === 3 ? 'C' : 'D';
+  return insol === 3 ? 'C' : 'D';
+}
+
+/* ============================================================
+   PROFIL DE VOL ARIANE 6
+   Table (altitude → vitesse totale, angle de tangage).
+   pitch = angle par rapport à la verticale (0°=vertical, 90°=horizontal).
+   Profil nominal simplifié issu de données publiques Ariane 6.
+============================================================ */
+const ARIANE = [
+  {h:0,     v:0,    pitch:0 },
+  {h:1000,  v:90,   pitch:3 },
+  {h:3000,  v:200,  pitch:10},
+  {h:5000,  v:300,  pitch:18},
+  {h:8000,  v:420,  pitch:28},
+  {h:10000, v:500,  pitch:35},
+  {h:15000, v:720,  pitch:50},
+  {h:20000, v:1000, pitch:60},
+  {h:30000, v:1550, pitch:72},
+  {h:40000, v:2100, pitch:78},
+  {h:50000, v:2600, pitch:82}
+].map(o=>({...o, pitch:o.pitch*Math.PI/180}));
+
+/* Interpolation linéaire du profil Ariane à h (m). */
+function ariane(h){
+  if (h<=ARIANE[0].h) return {v:ARIANE[0].v, pitch:ARIANE[0].pitch};
+  const N=ARIANE.length;
+  if (h>=ARIANE[N-1].h) return {v:ARIANE[N-1].v, pitch:ARIANE[N-1].pitch};
+  for (let i=0;i<N-1;i++){
+    if (h>=ARIANE[i].h && h<ARIANE[i+1].h){
+      const t=(h-ARIANE[i].h)/(ARIANE[i+1].h-ARIANE[i].h);
+      return {
+        v:    ARIANE[i].v     + t*(ARIANE[i+1].v     - ARIANE[i].v),
+        pitch:ARIANE[i].pitch + t*(ARIANE[i+1].pitch - ARIANE[i].pitch)
+      };
+    }
+  }
+}
+
+/* Dérive horizontale cumulée de la fusée depuis le sol jusqu'à h (m).
+   Intègre tan(pitch)·dh sur les segments du profil ARIANE (règle des
+   trapèzes). Retourne la distance horizontale (m) dans la direction AZIMUT. */
+function deriveAriane(h){
+  let x=0;
+  for (let i=0;i<ARIANE.length-1;i++){
+    const h0=ARIANE[i].h;
+    if (h<=h0) break;
+    const h1=Math.min(h, ARIANE[i+1].h);
+    const t0=Math.tan(ARIANE[i].pitch);
+    const t1=Math.tan(ARIANE[i].pitch + (ARIANE[i+1].pitch-ARIANE[i].pitch)*(h1-h0)/(ARIANE[i+1].h-h0));
+    x += (t0+t1)/2 * (h1-h0);
+    if (h<=ARIANE[i+1].h) break;
+  }
+  return x;
+}
+
+/* Temps de vol Ariane depuis le sol jusqu'à l'altitude h (m).
+   Intégration trapézoïdale de dh/vz sur la table ARIANE.
+   Utilisé pour estimer la fraction de propergol P120C consommée. */
+function tempsAriane(h){
+  let t=0;
+  for (let i=0;i<ARIANE.length-1;i++){
+    const h0=ARIANE[i].h;
+    if (h<=h0) break;
+    const h1=Math.min(h,ARIANE[i+1].h);
+    const frac=(h1-h0)/(ARIANE[i+1].h-h0);
+    const vz0=ARIANE[i].v*Math.cos(ARIANE[i].pitch);
+    const pitch1=ARIANE[i].pitch+frac*(ARIANE[i+1].pitch-ARIANE[i].pitch);
+    const v1   =ARIANE[i].v    +frac*(ARIANE[i+1].v    -ARIANE[i].v);
+    const vz1  =v1*Math.cos(pitch1);
+    const vzm  =(vz0+vz1)/2;
+    if (vzm>0.1) t+=(h1-h0)/vzm;
+    if (h1>=h) break;
+  }
+  return t;
+}
+
+/* ============================================================
+   PROPERGOL P120C — Ariane 6 / Vega-C
+   Source : ESA/ArianeGroup données publiques.
+   Composition HTPB/AP/Al (propergol solide) :
+     • 68 % perchlorate d'ammonium (AP=NH₄ClO₄) → HCl (rendement ~27,7 % du AP)
+     • 18 % poudre d'aluminium → Al₂O₃ (facteur 1,89 kg Al₂O₃/kg Al)
+     • 14 % liant HTPB       → CO₂, H₂O, CO (inerte pour cette analyse)
+   NOₓ : formation thermique haute température ≈ 0,3 % du propergol.
+   Durée de combustion P120C : 135 s · Séparation boosters : ~135 s / ~65 km.
+   Ariane 64 = 4 boosters · Ariane 62 = 2 boosters.
+   ─ rendements (fraction massique du propergol total) ─────────
+     HCl   : 0,68 × 0,277 ≈ 0,188
+     Al₂O₃ : 0,18 × 1,89  ≈ 0,340
+     NO₂   : 0,003 (NOx thermique, ordre de grandeur)
+   ─ seuils sanitaires de référence (mg/m³) ───────────────────
+     HCl   : AEGL-1 (1h) = 1,0 · AEGL-2 (1h) = 11,0 · TLV-C = 7,5
+     Al₂O₃ : TLV-TWA = 1,0 (pas d'AEGL — inerte)
+     NO₂   : AEGL-1 (1h) = 0,19 · AEGL-2 (1h) = 0,60
+============================================================ */
+const P120C = {
+  masse_kg : 142000,   // kg propergol par booster
+  t_burn_s : 135,      // secondes de combustion
+  h_sep_m  : 65000,    // altitude séparation boosters (m)
+  HCl_yield  : 0.188,  // fraction HCl / propergol total
+  Al2O3_yield: 0.340,  // fraction Al₂O₃ / propergol total
+  NO2_yield  : 0.003,  // fraction NOₓ (NO₂ équivalent)
+  // Seuils sanitaires [mg/m³]
+  HCl_AEGL1 : 1.0,  HCl_AEGL2 :11.0,
+  Al_TLV    : 1.0,
+  NO2_AEGL1 : 0.19, NO2_AEGL2 : 0.60,
+};
+
+// Nombre de boosters P120C selon le pad sélectionné
+// ELA-4 → Ariane 64 (4 boosters, cas pessimiste)
+// ELV   → Vega-C (1 booster P120C)
+// Autres → pas de données P120C disponibles
+const P120C_BOOSTERS = {
+  'ELA-4':4, 'ELV':1, 'ELS':0,
+  'LC39A':0,'SLC40':0,'SLC41':0,'LC39B':0,
+  'SLC4E':0,'SLC6':0,'BK1':0,'BK31':0,'PL43':0,
+  'VST1':0,'WEN1':0,'JQ921':0,'XC2':0,'TGMY1':0,'SDSC1':0,
+};
+
+/* ============================================================
+   BOUFFÉE GAUSSIENNE P120C — Pasquill-Gifford classe C
+   ─────────────────────────────────────────────────────────────
+   Source : explosion à H = z0 mètres. Masse Q kg HCl.
+   σ_y et σ_z : tables PG classe C (tropical instable, journée).
+     σ_y(x) = 0.209 · x^0.886   [m, x en m]
+     σ_z(x) = 0.177 · x^0.823
+   x = distance parcourue par le centre = u_moy · t
+   u_moy = vent moyen entre 0 et H (profil réel open-meteo)
+   Concentration au sol (réflexion ×2, puff gaussien) :
+     C(t) = 2Q / ((2π)^(3/2) · σ_y² · σ_z) · exp(−H²/2σ_z²)
+   Lofting boule de feu : fraction F_LOFT de la masse aspirée vers
+   le haut — réduit Q effectif au sol.
+============================================================ */
+const F_LOFT = 0.25;   // fraction masse HCl loftée par la boule de feu
+
+function puffPG(z0, profil, classe){
+  const nBoost = P120C_BOOSTERS[document.getElementById('pas').value]||0;
+  if (nBoost===0) return null;
+  if (z0 >= P120C.h_sep_m) return null;
+
+  // ── Masse HCl effective ──
+  const frac  = Math.min(1, tempsAriane(z0)/P120C.t_burn_s);
+  const m_rest= nBoost * P120C.masse_kg * (1-frac);
+  const Q     = m_rest * P120C.HCl_yield * (1-F_LOFT);  // kg HCl au sol
+  if (Q<1) return null;
+
+  // ── Position de la source ──
+  const xH = deriveAriane(z0);
+  const x_dep = xH*Math.sin(AZIMUT), y_dep = xH*Math.cos(AZIMUT);
+
+  // ── Vent moyen entre 0 et z0 ──
+  const couches = profil.filter(p=>p.z<=z0);
+  const n = couches.length||1;
+  const wx_moy = couches.reduce((s,p)=>s+p.wx,0)/n;
+  const wy_moy = couches.reduce((s,p)=>s+p.wy,0)/n;
+  const u_moy  = Math.max(Math.hypot(wx_moy,wy_moy), 0.5); // m/s
+
+  // ── PG classe sélectionnée ──
+  const pg    = PG_CLASSES[classe] || PG_CLASSES['C'];
+  const sy_pg = x => pg.sy_a * Math.pow(Math.max(x,1), 0.886);
+  const sz    = x => pg.sz_a * Math.pow(Math.max(x,1), pg.sz_b);
+
+  // ── Concentration centreline sol à l'instant t ──
+  const Cmax = t => {
+    const x    = u_moy*t;
+    const sz_v = sz(x);
+    const sy_v = sy_pg(x);
+    return 2*Q / (Math.pow(2*Math.PI,1.5)*sy_v*sy_v*sz_v)
+           * Math.exp(-z0*z0/(2*sz_v*sz_v)) * 1e6;  // mg/m³
+  };
+
+  // ── Pic : échantillonnage log entre 1s et 72h ──
+  let t_peak=1, Cpeak=0;
+  for (let i=0;i<=200;i++){
+    const t=Math.exp(Math.log(1)+i/200*Math.log(72*3600));
+    const c=Cmax(t);
+    if (c>Cpeak){ Cpeak=c; t_peak=t; }
+  }
+
+  const seuil = P120C.HCl_AEGL1 / 10;  // seuil opérationnel = AEGL-1 / 10
+
+  // ── z0_seuil : altitude max de contact (Cpeak = seuil) par dichotomie ──
+  // On cherche z0_s tel que Cpeak(z0_s, Q(z0_s)) = seuil.
+  // Cpeak décroît avec z0 → dichotomie sur [50, z0].
+  function CpeakAt(zh){
+    const fr=Math.min(1,tempsAriane(zh)/P120C.t_burn_s);
+    const Qh=nBoost*P120C.masse_kg*(1-fr)*P120C.HCl_yield*(1-F_LOFT);
+    if (Qh<1) return 0;
+    const uh=Math.max(Math.hypot(
+      profil.filter(p=>p.z<=zh).reduce((s,p)=>s+p.wx,0)/Math.max(profil.filter(p=>p.z<=zh).length,1),
+      profil.filter(p=>p.z<=zh).reduce((s,p)=>s+p.wy,0)/Math.max(profil.filter(p=>p.z<=zh).length,1)
+    ),0.5);
+    let tp=1,Cp=0;
+    for(let i=0;i<=150;i++){
+      const t=Math.exp(i/150*Math.log(72*3600));
+      const x=uh*t, sz_v=sz(x), sy_v=sy_pg(x);
+      const c=2*Qh/(Math.pow(2*Math.PI,1.5)*sy_v*sy_v*sz_v)*Math.exp(-zh*zh/(2*sz_v*sz_v))*1e6;
+      if(c>Cp){Cp=c;tp=t;}
+    }
+    return Cp;
+  }
+  let z0_seuil=null;
+  if (CpeakAt(50)>seuil){
+    let za=50, zb=z0;
+    // Si Cpeak(z0) > seuil : z0_seuil > z0 (pas de sens ici, noBreach=false sera vrai)
+    if (CpeakAt(zb)<seuil){
+      for(let i=0;i<60;i++){ const zm=(za+zb)/2; CpeakAt(zm)>seuil?(za=zm):(zb=zm); }
+      z0_seuil=Math.round((za+zb)/2);
+    }
+  }
+
+  if (Cpeak<seuil) return { noBreach:true, Cpeak, t_peak, z0_seuil,
+    x_dep, y_dep, wx_moy, wy_moy,
+    _Cmax:Cmax,
+    _Ccentre:(t)=>{ const x=u_moy*t; const sz_v=sz(x); const sy_v=sy_pg(x);
+      return 2*Q/(Math.pow(2*Math.PI,1.5)*sy_v*sy_v*sz_v)*1e6; },
+    _sy:(t)=>sy_pg(u_moy*t) };
+
+  // ── t_touch et t_end (dichotomies) ──
+  let ta=1, tb=t_peak;
+  for (let i=0;i<80;i++){ const tm=(ta+tb)/2; Cmax(tm)<seuil?(ta=tm):(tb=tm); }
+  const t_touch=(ta+tb)/2;
+  ta=t_peak; let tb2=t_peak*2;
+  while(Cmax(tb2)>seuil) tb2*=2;
+  for (let i=0;i<80;i++){ const tm=(ta+tb2)/2; Cmax(tm)>seuil?(ta=tm):(tb2=tm); }
+  const t_end=(ta+tb2)/2;
+
+  // ── Rayon AEGL-1 au pic ──
+  const x_peak  = u_moy*t_peak;
+  const sy_peak = sy_pg(x_peak);
+  const r_aegl1 = sy_peak*Math.sqrt(-2*Math.log(seuil/Cpeak));
+
+  return { noBreach:false, Q, z_dep:z0, Cpeak, t_peak, t_touch, t_end,
+    r_aegl1, x_dep, y_dep, wx_moy, wy_moy, u_moy, seuil,
+    _Cmax:Cmax,
+    _Ccentre:(t)=>{ const x=u_moy*t; const sz_v=sz(x); const sy_v=sy_pg(x);
+      return 2*Q/(Math.pow(2*Math.PI,1.5)*sy_v*sy_v*sz_v)*1e6; },
+    _sy:(t)=>sy_pg(u_moy*t)
+  };
+}
+
+
+/*─────────────────────────────────────────────────────────────────────
+   CORRECTION FONDAMENTALE : la source n'est PAS au sol.
+   Pour une bouffée gaussienne à hauteur H, la concentration sol est :
+     C(x) = Q/(2π·σy·σz·u) · 2·exp(−H²/2σz²)
+   Le facteur exp(−H²/2σz²) est ~10⁻³³ à la distance balistique (σz << H).
+   La concentration maximum sol se produit quand σz = H/√2, soit
+   typiquement plusieurs centaines de km du site — HORS zone balistique.
+
+   Formule analytique du maximum :
+     C_max = Q / (π·e·u·σy*·H)    avec σy* = σy(x*)
+     x*    tel que σz(x*) = H/√2
+   ─────────────────────────────────────────────────────────────────────
+   Pasquill-Gifford classe C (tropique, conditions déstabilisantes) :
+     σy(x) = 0,209·x^0,886  ;  σz(x) = 0,177·x^0,823  (x, σ en m)    */
+function concPolluants(z0, profil, tLast){
+  const nBoost = P120C_BOOSTERS[
+    document.getElementById('pas').value] || 0;
+  if (nBoost === 0) return null;
+
+  // Masse propergol restante
+  const t_vol = tempsAriane(z0);
+  const frac_burned = Math.min(1, t_vol / P120C.t_burn_s);
+  const m_rest = nBoost * P120C.masse_kg * (1 - frac_burned); // kg
+
+  // Vent moyen réel sous z0
+  let wx=0, wy=0, n=0;
+  for (const p of profil) if (p.z<=z0){ wx+=p.wx; wy+=p.wy; n++; }
+  const u = n>0 ? Math.max(Math.hypot(wx/n,wy/n), 1.0) : 5.0; // m/s
+
+  const H = z0; // hauteur source = altitude explosion
+
+  // x* : distance où σz = H/√2  →  max de C_ground pour source élevée
+  // σz(x) = 0,177 · x^0,823  →  x* = (H/(√2·0,177))^(1/0,823)
+  const sz_opt = H / Math.SQRT2;
+  const x_star = Math.pow(sz_opt / 0.177, 1 / 0.823); // m
+  const sy_star = 0.209 * Math.pow(x_star, 0.886);      // m
+
+  // C_max sol (formule analytique source élevée, réflexion sol incluse)
+  // C_max = Q / (π · e · u · σy* · H)
+  const Cmax_kg = (q) => q / (Math.PI * Math.E * u * sy_star * H); // kg/m³
+  const Cmax_mg = (q) => Cmax_kg(q) * 1e6; // mg/m³
+
+  // Concentration à la frontière balistique (info seulement — quasi-nulle)
+  // C(x_balist) = Q/(2π·σy·σz·u) × 2·exp(−H²/2σz²)
+  const x_balist = Math.max(u * tLast, 1);  // évite division par zéro si tLast=0
+  const sy_b = 0.209 * Math.pow(x_balist, 0.886);
+  const sz_b = 0.177 * Math.pow(x_balist, 0.823);
+  const factH = 2 * Math.exp(-H*H / (2*sz_b*sz_b));
+  const Cbalist_mg = (q) => q/(2*Math.PI*sy_b*sz_b*u) * factH * 1e6;
+
+  return {
+    // Concentrations MAXIMALES sol (x = x*)
+    HCl   : Cmax_mg(m_rest * P120C.HCl_yield),
+    Al2O3 : Cmax_mg(m_rest * P120C.Al2O3_yield),
+    NO2   : Cmax_mg(m_rest * P120C.NO2_yield),
+    // Concentrations à la frontière balistique (quasi-nulles, affichage info)
+    HCl_b  : Cbalist_mg(m_rest * P120C.HCl_yield),
+    m_rest_t: m_rest / 1000, frac_burned, nBoost, u,
+    x_star_km: x_star/1000,   // km — distance du max sol
+    x_balist_km: x_balist/1000,
+    sy_star_km: sy_star/1000,
+  };
+}
+
+/* ============================================================
+   CODE DES WORKERS PHYSIQUES
+   ─ Chaîne autonome instanciée via Blob URL.
+   ─ Pas de dépendance au DOM ni au scope global.
+   ─ Contient l'intégralité de la physique :
+       • Atmosphère Standard Internationale (ISA, 7 couches)
+       • Interpolation vent
+       • Cd(Ma) par type de grain
+       • Force de Coriolis
+       • Intégrateur Dormand-Prince RK45 avec pas adaptatif
+   ─ Interface :
+       entrée  → { tasks:[{sIn,zTarget,Cd0,cdType,m,ventF},...], profil, siteLat }
+       sortie  → { results:[état,...] }  (même ordre que tasks)
+============================================================ */
+const WORKER_CODE = `
+"use strict";
+
+// ─── Constantes physiques ───────────────────────────────────
+const D_BALLE = 0.040;
+const A_BALLE = Math.PI*(D_BALLE/2)**2;  // section frontale m²
+const G0      = 9.80665;   // m/s² au niveau de la mer (standard ISA/OACI)
+const RE      = 6371000;   // m — rayon terrestre moyen
+const OMEGA   = 7.2921e-5; // rad/s — vitesse angulaire terrestre
+
+// Gravité locale à l'altitude z.
+// À 50 km : g ≈ 9.652 m/s², soit -1.58 % par rapport au sol.
+// Négligeable en basse altitude, mais cohérent avec la précision RK45.
+// Note : l'ISA utilise G0 constant pour ses pressions de base (standard OACI) ;
+// c'est uniquement dans l'équation du mouvement qu'on utilise g(z).
+function gLocal(z){ return G0*(RE/(RE+Math.max(z,0)))**2; }
+
+// ─── Atmosphère Standard Internationale (ISA, OACI doc 7488) ─
+// 7 couches jusqu'à ~86 km. Chaque couche définie par :
+//   z    : altitude de base (m)
+//   T    : température à la base (K)
+//   dT   : gradient thermique (K/m) — 0 = couche isotherme
+// Les pressions de base sont pré-calculées à l'initialisation.
+//
+// Couche 0 (troposphère 0-11 km)    : dT = -6.5 K/km
+// Couche 1 (strato. basse 11-20 km) : dT = 0  (isotherme)
+// Couche 2 (strato. moy. 20-32 km)  : dT = +1.0 K/km
+// Couche 3 (strato. hte 32-47 km)   : dT = +2.8 K/km
+// Couche 4 (méso. basse 47-51 km)   : dT = 0  (isotherme)
+// Couche 5 (mésosphère 51-71 km)    : dT = -2.8 K/km
+// Couche 6 (méso. hte 71-86 km)     : dT = -2.0 K/km
+
+// Paramètres air humide — Kourou (Guyane équatoriale)
+// HR_SOL : humidité relative au sol transmise par le thread principal.
+// H_HR   : hauteur d'échelle de l'humidité tropicale (~2 km).
+//   HR(z) = HR_SOL · exp(-z/H_HR)
+// Correction densité via température virtuelle :
+//   e_s(T)  = 611.2 · exp(17.67·(T−273.15)/(T−29.65))  [Magnus, Pa]
+//   e       = HR · e_s   (pression de vapeur)
+//   T_v     = T · (1 + 0.378·e/p)                       (température virtuelle)
+//   ρ       = p / (R_dry · T_v)
+// Impact : −1 à −2 % sur ρ au sol, négligeable au-dessus de 5 km.
+// La vitesse du son dépend de T réelle, pas de T_v.
+let _HR_SOL = 0.80;  // initialisé via le premier message reçu
+const H_HR  = 2000;  // m — hauteur d'échelle humidité tropicale
+const _ISA = (function(){
+  const g_=9.80665, R_=287.05;  // constante des gaz parfaits air sec
+  const L=[
+    {z:0,     T:288.15, dT:-0.0065},
+    {z:11000, T:216.65, dT:0      },
+    {z:20000, T:216.65, dT:0.001  },
+    {z:32000, T:228.65, dT:0.0028 },
+    {z:47000, T:270.65, dT:0      },
+    {z:51000, T:270.65, dT:-0.0028},
+    {z:71000, T:214.65, dT:-0.002 }
+  ];
+  // Calcul des pressions de base par récurrence inter-couches
+  let p=101325;
+  for (let i=0;i<L.length;i++){
+    L[i].p=p;
+    if (i<L.length-1){
+      const dz=L[i+1].z-L[i].z;
+      if (L[i].dT===0)
+        p *= Math.exp(-g_*dz/(R_*L[i].T));  // couche isotherme : p=p_b·exp(...)
+      else
+        p *= Math.pow((L[i].T+L[i].dT*dz)/L[i].T, -g_/(R_*L[i].dT));  // couche gradient : p=p_b·(T/T_b)^n
+    }
+  }
+  return {layers:L, g:g_, R:R_};
+})();
+
+// Retourne {rho (kg/m³), a (m/s)} à l'altitude z.
+// ρ corrigé pour l'humidité via la température virtuelle T_v.
+// a = sqrt(γ·R·T) dépend de T réelle (pas T_v) — convention standard.
+function isaAtmo(z){
+  z=Math.max(0,z);
+  const {layers,g,R}=_ISA;
+  let lay=layers[0];
+  for (let i=layers.length-1;i>=0;i--){ if (z>=layers[i].z){lay=layers[i];break;} }
+  const dz=z-lay.z;
+  const T=lay.T+lay.dT*dz;
+  const p=lay.dT===0
+    ? lay.p*Math.exp(-g*dz/(R*lay.T))
+    : lay.p*Math.pow(T/lay.T, -g/(R*lay.dT));
+  // Correction air humide : T_v = T·(1 + 0.378·e/p)
+  // e_s (Magnus), e = HR(z)·e_s, HR décroît exponentiellement avec z
+  const HR = _HR_SOL*Math.exp(-z/H_HR);
+  const es = 611.2*Math.exp(17.67*(T-273.15)/(T-29.65));  // Pa
+  const e  = Math.min(HR*es, p*0.04);   // cap à 4 % de p (sécurité physique)
+  const Tv = T*(1 + 0.378*e/p);
+  return { rho:p/(R*Tv), a:Math.sqrt(1.4*R*T) };
+}
+
+// ─── Interpolation vent ──────────────────────────────────────
+// Recherche dichotomique O(log N) dans le profil vertical trié.
+// Extrapolation par la valeur limite si z hors des bornes.
+function ventA(z, profil){
+  if (z<=profil[0].z)            return {wx:profil[0].wx, wy:profil[0].wy};
+  const N=profil.length;
+  if (z>=profil[N-1].z)          return {wx:profil[N-1].wx, wy:profil[N-1].wy};
+  let lo=0, hi=N-1;
+  while (hi-lo>1){ const m=(lo+hi)>>1; (profil[m].z<=z)?lo=m:hi=m; }
+  // CORRECTION 1 : empêche la division par zéro si deux couches ont la même altitude
+  const dz = profil[hi].z - profil[lo].z;
+  const t  = dz === 0 ? 0 : (z - profil[lo].z) / dz;
+  return {
+    wx:profil[lo].wx+t*(profil[hi].wx-profil[lo].wx),
+    wy:profil[lo].wy+t*(profil[hi].wy-profil[lo].wy)
+  };
+}
+
+// ─── Coefficient de traînée Cd(Ma) ───────────────────────────
+// Les Cd subsoniques de BALLES sont des valeurs de référence à Ma≈0.
+// En régime transsonique/supersonique, Cd varie fortement.
+//
+// 'sphere' : sphère lisse — crise transsonique marquée.
+//   Cd monte de 0.45 (subsonique) jusqu'à ~1.10 (Ma=1.2, onde de choc détachée)
+//   puis redescend en supersonique (onde attachée, moins de traînée de forme).
+//   Source : Achenbach 1978, données NACA/NASA sphères.
+//
+// 'blunt' : corps émoussé/irrégulier — moins sensible au Ma.
+//   La traînée de forme (séparation géométrique) domine sur la traînée d'onde.
+//   Variation faible : +15% max au transsonique.
+//
+// Tables : [Ma, Cd_absolu] pour 'sphere', [Ma, ratio] pour 'blunt'.
+// Le ratio 'blunt' est appliqué multiplicativement sur Cd0 de référence.
+const _CD_SPHERE = [
+  [0.0,0.45],[0.6,0.45],[0.8,0.50],[0.9,0.65],
+  [1.0,0.95],[1.2,1.10],[1.5,1.00],[2.0,0.92],
+  [3.0,0.85],[5.0,0.78],[8.0,0.75]
+];
+const _CD_BLUNT_RATIO = [
+  [0.0,1.00],[0.8,1.05],[1.0,1.15],[2.0,1.10],[4.0,1.05],[8.0,1.00]
+];
+function _interp(Ma, tbl){
+  if (Ma<=tbl[0][0])             return tbl[0][1];
+  if (Ma>=tbl[tbl.length-1][0])  return tbl[tbl.length-1][1];
+  for (let i=0;i<tbl.length-1;i++){
+    if (Ma>=tbl[i][0]&&Ma<tbl[i+1][0]){
+      const t=(Ma-tbl[i][0])/(tbl[i+1][0]-tbl[i][0]);
+      return tbl[i][1]+t*(tbl[i+1][1]-tbl[i][1]);
+    }
+  }
+  return tbl[0][1];
+}
+function cdEffectif(Cd0, cdType, Ma){
+  if (cdType==='sphere')
+    return _interp(Ma,_CD_SPHERE) * (Cd0/0.45);  // normalisé sur Cd0 ref=0.45
+  else
+    return Cd0 * _interp(Ma,_CD_BLUNT_RATIO);     // ratio multiplicatif
+}
+
+// ─── Dérivée d'état (équation du mouvement) ──────────────────
+// État s = [x, y, z, vx, vy, vz] en coordonnées locales ENU (m, m/s).
+// Axes : x=Est, y=Nord, z=Haut.
+//
+// Forces modélisées :
+//   1. Traînée aérodynamique : F_d = 0.5·ρ(z)·Cd(Ma)·A·vrel·(vvent−vgrain)
+//      avec ρ(z) de l'ISA et Cd(Ma) par table.
+//   2. Gravité : az = -G
+//   3. Coriolis : a_c = -2·(Ω × v)
+//      À CSG (φ≈5.2°), l'effet principal est une déviation vers l'Est
+//      d'environ 200-400 m pour une chute depuis 50 km (~600 s de vol).
+//      Non négligeable pour une enveloppe pessimiste.
+//
+// Note Reynolds (Re) : pour ces grains à basse altitude (v_terminal ~5-10 m/s),
+// Re = ρ·v·d/μ ≈ 1.2·8·0.04/1.8e-5 ≈ 2.1e4 → régime de Newton (Cd stable).
+// La correction Cd(Re) est négligeable ici, Cd(Ma) suffit.
+function fP(s, profil, Cd0, cdType, m, ventF, siteLat){
+  const {rho, a} = isaAtmo(s[2]);
+
+  // Vent interpolé avec facteur de perturbation
+  const w = ventA(s[2], profil);
+  const wx=w.wx*ventF, wy=w.wy*ventF;
+
+  // Vitesse relative grain/vent dans les 3 axes
+  const dvx=wx-s[3], dvy=wy-s[4], dvz=-s[5];
+  const vrel=Math.hypot(dvx,dvy,dvz);
+
+  // Cd effectif selon le nombre de Mach local
+  const Cd=cdEffectif(Cd0, cdType, vrel/Math.max(a,1));
+
+  // Coefficient de traînée volumique k = 0.5·ρ·Cd·A / m
+  const k=0.5*rho*Cd*A_BALLE/m;
+
+  // Accélération de Coriolis : a_c = -2·(Ω × v)
+  // Décomposition de Ω en ENU : Ω = (0, Ω·cos φ, Ω·sin φ)
+  // Ω × v = (Ω_N·vz − Ω_U·vy,  Ω_U·vx,  −Ω_N·vx)
+  const OM_N=OMEGA*Math.cos(siteLat);  // composante Nord de Ω (dominante à φ≈5°)
+  const OM_U=OMEGA*Math.sin(siteLat);  // composante Verticale de Ω (petite à φ≈5°)
+  const acx=-2*(OM_N*s[5]-OM_U*s[4]);  // déviation Est (principal effet)
+  const acy=-2* OM_U*s[3];              // déviation Nord (faible, Ω_U petit)
+  const acz= 2* OM_N*s[3];             // effet vertical (négligeable)
+
+  return [
+    s[3], s[4], s[5],
+    k*vrel*dvx + acx,
+    k*vrel*dvy + acy,
+    k*vrel*dvz - gLocal(s[2]) + acz,
+    1   // dt/dt = 1 : le temps s'accumule gratuitement dans s[6]
+  ];
+}
+
+// ─── Intégrateur Dormand-Prince RK45 ─────────────────────────
+// Méthode à pas adaptatif d'ordre 5 (solution) / 4 (erreur embarquée).
+// Référence : Dormand & Prince, J. Comput. Appl. Math. 6:19-26, 1980.
+//
+// Avantage sur le schéma empirique précédent : le pas dt est contrôlé
+// par une tolérance d'erreur rigoureuse, pas par des seuils de vitesse
+// arbitraires. Robuste aux transitions brusques (crise transsonique,
+// entrée dans la couche limite, etc.).
+//
+// FSAL (First Same As Last) : k7 du pas i = k1 du pas i+1 → 5 éval/pas.
+// On n'exploite pas FSAL ici pour simplifier (6 éval/pas si rejet).
+function rk45Step(s, dt, profil, Cd0, cdType, m, ventF, siteLat){
+  function f(ss){ return fP(ss,profil,Cd0,cdType,m,ventF,siteLat); }
+  const k1=f(s);
+  const k2=f(s.map((v,i)=>v+dt*(1/5)*k1[i]));
+  const k3=f(s.map((v,i)=>v+dt*((3/40)*k1[i]+(9/40)*k2[i])));
+  const k4=f(s.map((v,i)=>v+dt*((44/45)*k1[i]+(-56/15)*k2[i]+(32/9)*k3[i])));
+  const k5=f(s.map((v,i)=>v+dt*((19372/6561)*k1[i]+(-25360/2187)*k2[i]+(64448/6561)*k3[i]+(-212/729)*k4[i])));
+  const k6=f(s.map((v,i)=>v+dt*((9017/3168)*k1[i]+(-355/33)*k2[i]+(46732/5247)*k3[i]+(49/176)*k4[i]+(-5103/18656)*k5[i])));
+  // Solution 5e ordre (valeur avancée)
+  const y5=s.map((v,i)=>v+dt*((35/384)*k1[i]+(500/1113)*k3[i]+(125/192)*k4[i]+(-2187/6784)*k5[i]+(11/84)*k6[i]));
+  const k7=f(y5);
+  // Erreur embarquée = différence solution 5e ordre - solution 4e ordre
+  // Coefficients : e_i = b5_i - b4_i (voir table Dormand-Prince)
+  const err=s.map((_,i)=>dt*((71/57600)*k1[i]+(-71/16695)*k3[i]+(71/1920)*k4[i]+(-17253/339200)*k5[i]+(22/525)*k6[i]+(-1/40)*k7[i]));
+  return {y:y5, err};
+}
+
+// ─── Intégration d'une trajectoire (couche à couche) ─────────
+// Intègre depuis sIn jusqu'à zTarget avec pas adaptatif RK45.
+// Retourne l'état interpolé exactement à zTarget.
+//
+// Critère d'erreur de Hairer & Wanner (ATOL + RTOL·|y|) :
+//   Position : ATOL=50 m — largement suffisant pour une enveloppe au km
+//   Vitesse  : ATOL=1 m/s
+//   Temps    : ATOL=1 s  — s[6] s'intègre sans effort (dérivée = 1)
+function trajCouche(sIn, zTarget, profil, Cd0, cdType, m, ventF, siteLat){
+  const ATOL=[50,50,50,1,1,1,1], RTOL=1e-3;  // 7 composantes : x,y,z,vx,vy,vz,t
+  const DT_MAX=5.0, DT_MIN=1e-4;
+  let s=sIn.slice(), dt=0.5, secu=0;
+
+  while(s[2]>zTarget && secu++<100000){
+    // Borner le pas pour ne pas dépasser zTarget d'un grain entier
+    // (dzLeft / |vz| = temps estimé pour atteindre la cible)
+    const dzLeft=s[2]-zTarget;
+    const dtEff=Math.max(DT_MIN, Math.min(dt, dzLeft/Math.max(0.1,Math.abs(s[5]))));
+
+    const {y,err}=rk45Step(s,dtEff,profil,Cd0,cdType,m,ventF,siteLat);
+
+    // Norme d'erreur normalisée (max sur les 7 composantes)
+    let errN=0;
+    for(let i=0;i<7;i++){
+      const sc=ATOL[i]+RTOL*Math.max(Math.abs(s[i]),Math.abs(y[i]));
+      errN=Math.max(errN, Math.abs(err[i])/sc);
+    }
+
+    if(errN>1){
+      // Pas rejeté — réduire dt (formule PI standard RK45)
+      dt=Math.max(DT_MIN, dtEff*Math.max(0.1, 0.9*Math.pow(errN,-0.2)));
+      continue;
+    }
+
+    // Pas accepté — avancer l'état
+    const sPrev=s.slice();
+    s=y;
+
+    if(s[2]<=zTarget){
+      // Interpolation linéaire pour atterrir exactement à zTarget
+      // CORRECTION 2 : empêche la division par zéro si altitudes numériquement identiques
+      const dz = sPrev[2] - s[2];
+      const a  = dz === 0 ? 1 : (sPrev[2] - zTarget) / dz;
+      return sPrev.map((v,i)=>v+a*(s[i]-v));
+    }
+
+    // Ajuster dt pour le prochain pas (formule standard)
+    dt=Math.min(DT_MAX, dtEff*Math.min(5, 0.9*Math.pow(Math.max(errN,1e-10),-0.2)));
+  }
+  return s;  // sécurité : état courant si limite d'itérations atteinte
+}
+
+// ─── Gestionnaire de messages ─────────────────────────────────
+// Reçoit un lot de tâches, les traite en séquence (pas de parallélisme
+// interne — la parallélisation est gérée par le pool côté thread principal).
+// Retour groupé pour minimiser les allers-retours postMessage.
+// HR_SOL est transmis une seule fois par couche avec le profil.
+self.onmessage=function(e){
+  const {tasks,profil,siteLat,hrSol}=e.data;
+  _HR_SOL=hrSol;  // synchroniser le paramètre humidité
+  const results=tasks.map(t=>
+    trajCouche(t.sIn,t.zTarget,profil,t.Cd0,t.cdType,t.m,t.ventF,siteLat)
+  );
+  self.postMessage({results});
+};
+`;
+
+/* ============================================================
+   POOL DE WEB WORKERS
+   ─ navigator.hardwareConcurrency : threads logiques disponibles.
+   ─ On garde 1 cœur libre pour le thread principal (UI + rendu).
+   ─ Plafond à 8 : au-delà, l'overhead postMessage/structured-clone
+     du profil météo (~16 objets) n'est plus compensé par le gain.
+   ─ Les workers sont créés via Blob URL (pas de fichier séparé) et
+     réutilisés pour toutes les couches — pas de startup cost répété.
+============================================================ */
+const N_WORKERS = Math.max(1, Math.min(8, (navigator.hardwareConcurrency||2) - 1));
+const _wBlob    = new Blob([WORKER_CODE], {type:'application/javascript'});
+const _wURL     = URL.createObjectURL(_wBlob);
+const workerPool = Array.from({length:N_WORKERS}, ()=>new Worker(_wURL));
+
+/* Distribue un tableau de tâches sur le pool de workers.
+   ─ Stratégie : N_WORKERS lots équilibrés, une paire postMessage/
+     onmessage par worker par couche → overhead minimal.
+   ─ siteLat (rad) passé une seule fois par message (partagé entre
+     toutes les tâches du lot, évite de le dupliquer dans chaque tâche).
+   ─ Retourne Promise<état[]> concaténés dans l'ordre original. */
+function runLayerParallel(tasks, profil, siteLat, hrSol){
+  const chunks=[];
+  const sz=Math.ceil(tasks.length/N_WORKERS);
+  for (let i=0;i<tasks.length;i+=sz) chunks.push(tasks.slice(i,i+sz));
+  const promises=chunks.map((chunk,wi)=>
+    new Promise(resolve=>{
+      workerPool[wi].onmessage=e=>resolve(e.data.results);
+      workerPool[wi].postMessage({tasks:chunk, profil, siteLat, hrSol});
+    })
+  );
+  return Promise.all(promises).then(batches=>batches.flat());
+}
+
+/* ============================================================
+   CACHE MÉTÉO
+   ─ open-meteo.com pour le point du pas de tir.
+   ─ Conversion direction météo → composantes ENU :
+       wx = -v·sin(dir)  [Est positif]
+       wy = -v·cos(dir)  [Nord positif]
+     (vent "de" dir → on inverse pour obtenir le vecteur vitesse)
+   ─ PROFIL_VENT_STATIQUE court-circuite l'API si non null.
+============================================================ */
+let meteoCache=null;
+async function getMeteo(forceRefresh=false){
+  // Mode vent statique : reproductibilité garantie
+  if (PROFIL_VENT_STATIQUE){
+    return {profil:PROFIL_VENT_STATIQUE, heure:'STATIQUE',
+            ptMesure:{lat:SITE.lat,lon:SITE.lon}, site:SITE.nom,
+            qnh:1013.25, hr:HR_SOL*100};
+  }
+  if (!forceRefresh&&meteoCache&&meteoCache.site===SITE.nom) return meteoCache;
+  const vars=NIVEAUX_HPA.flatMap(h=>[
+    `wind_speed_${h}hPa`,`wind_direction_${h}hPa`,`geopotential_height_${h}hPa`
+  ]).concat([
+    'surface_pressure','relative_humidity_2m',
+    'wind_speed_10m','shortwave_radiation','cloud_cover'
+  ]).join(',');
+  const url=`https://api.open-meteo.com/v1/forecast`
+    +`?latitude=${SITE.lat}&longitude=${SITE.lon}`
+    +`&hourly=${vars}&forecast_days=1&wind_speed_unit=ms&timezone=GMT`;
+  const r=await fetch(url);
+  if (!r.ok) throw new Error('HTTP '+r.status);
+  const j=await r.json();
+  // Tranche horaire la plus proche de maintenant
+  const now=new Date(); const iso=now.toISOString().slice(0,13)+':00';
+  let idx=j.hourly.time.indexOf(iso);
+  if (idx<0){
+    const ms=now.getTime(); let best=Infinity;
+    j.hourly.time.forEach((t,i)=>{
+      const d=Math.abs(new Date(t+'Z').getTime()-ms);
+      if (d<best){best=d;idx=i;}
+    });
+  }
+  const profil=NIVEAUX_HPA.map(h=>{
+    const z  =j.hourly[`geopotential_height_${h}hPa`][idx];
+    const v  =j.hourly[`wind_speed_${h}hPa`][idx];
+    const dir=j.hourly[`wind_direction_${h}hPa`][idx];
+    if (z==null||v==null||dir==null) return null;
+    const rad=dir*Math.PI/180;
+    return {z,v,dir, wx:-v*Math.sin(rad), wy:-v*Math.cos(rad), hPa:h};
+  }).filter(x=>x).sort((a,b)=>a.z-b.z);
+  // Sanity check — vent > 150 km/h = donnée aberrante
+  const MAX_VENT_MS = 150/3.6;
+  const aberrant = profil.find(p=>p.v>MAX_VENT_MS);
+  if (aberrant) throw new Error(
+    `Données météo aberrantes : vent ${(aberrant.v*3.6).toFixed(0)} km/h à ${Math.round(aberrant.z)} m — simulation hors spécification.`
+  );
+  // QNH, humidité, vent surface, radiation, nébulosité
+  const qnh      = j.hourly.surface_pressure?.[idx]       ?? 1013.25;
+  const hr       = j.hourly.relative_humidity_2m?.[idx]   ?? HR_SOL*100;
+  const u10      = j.hourly.wind_speed_10m?.[idx]         ?? 5;
+  const rad_sw   = j.hourly.shortwave_radiation?.[idx]    ?? 0;
+  const nuage    = j.hourly.cloud_cover?.[idx]            ?? 50;
+
+  meteoCache={profil, heure:j.hourly.time[idx]+'Z',
+              ptMesure:{lat:j.latitude,lon:j.longitude}, site:SITE.nom,
+              qnh, hr, u10, rad_sw, nuage};
+  return meteoCache;
+}
+
+/* ============================================================
+   GÉOMÉTRIE : ENVELOPPE CONVEXE (Andrew Monotone Chain O(n log n))
+   Retourne les indices des points de la coque dans l'ordre.
+   Utilisée après chaque couche pour réduire le nombre de points
+   propagés à la couche suivante : seuls les extrêmes comptent
+   (l'enveloppe convexe est conservative par définition).
+============================================================ */
+function cross(O,A,B){ return (A[0]-O[0])*(B[1]-O[1])-(A[1]-O[1])*(B[0]-O[0]); }
+function convexHullIdx(pts){
+  const n=pts.length;
+  if (n<3) return pts.map((_,i)=>i);
+  const idx=pts.map((_,i)=>i).sort((a,b)=>pts[a][0]-pts[b][0]||pts[a][1]-pts[b][1]);
+  const hull=[];
+  for (let i=0;i<n;i++){
+    const ip=idx[i];
+    while (hull.length>=2&&cross(pts[hull[hull.length-2]],pts[hull[hull.length-1]],pts[ip])<=0) hull.pop();
+    hull.push(ip);
+  }
+  const t=hull.length+1;
+  for (let i=n-2;i>=0;i--){
+    const ip=idx[i];
+    while (hull.length>=t&&cross(pts[hull[hull.length-2]],pts[hull[hull.length-1]],pts[ip])<=0) hull.pop();
+    hull.push(ip);
+  }
+  hull.pop();
+  return hull;
+}
+
+/* Aire d'un polygone (formule du lacet de Gauss) → m². */
+function airePoly(poly){
+  let A=0;
+  for (let i=0;i<poly.length;i++){
+    const j=(i+1)%poly.length;
+    A+=poly[i][0]*poly[j][1]-poly[j][0]*poly[i][1];
+  }
+  return Math.abs(A)/2;
+}
+
+/* Cède le contrôle au navigateur (rendu, events) entre deux couches. */
+const yieldUI=()=>new Promise(r=>setTimeout(r,0));
+
+/* ============================================================
+   SIMULATION INCRÉMENTALE
+   Stratégie "enveloppe par couche" :
+   1. Initialiser N_PTS points sur le cercle de dispersion.
+   2. Pour chaque niveau météo sous z0 (ordre décroissant) :
+      a. Construire tous les combos (point × balle × facteur vent).
+      b. Intégrer chaque combo jusqu'au niveau courant (workers).
+      c. Coque convexe → réduction des points pour la couche suivante.
+   3. La coque finale (sol) est l'enveloppe pessimiste.
+   La couche suivante ne reçoit que les sommets de la coque (≤ N_PTS),
+   pas tous les points intermédiaires → complexité bornée.
+============================================================ */
+async function simuler(z0, statusCb){
+  const t0=performance.now();
+  if (statusCb) statusCb('météo…');
+  const {profil,heure,ptMesure,qnh,hr}=await getMeteo();
+  const hrSolReel = (hr != null ? hr : HR_SOL * 100) / 100;
+  const siteLat=SITE.lat*Math.PI/180;
+
+  // Conditions initiales : position et vitesse fusée au point d'explosion
+  const ar=ariane(z0), xH=deriveAriane(z0);
+  const x0=xH*Math.sin(AZIMUT), y0=xH*Math.cos(AZIMUT);
+  const vx0=ar.v*Math.sin(ar.pitch)*Math.sin(AZIMUT);
+  const vy0=ar.v*Math.sin(ar.pitch)*Math.cos(AZIMUT);
+  const vz0=ar.v*Math.cos(ar.pitch);
+
+  // N_PTS points sur le cercle de dispersion, même vitesse initiale
+  // s[6] = 0 : le temps commence à 0 au point d'explosion
+  let etats=[];
+  for (let i=0;i<N_PTS;i++){
+    const a=2*Math.PI*i/N_PTS;
+    etats.push([x0+RAYON_DISP*Math.cos(a), y0+RAYON_DISP*Math.sin(a), z0, vx0,vy0,vz0, 0]);
+  }
+
+  // Niveaux cibles : altitudes météo sous z0, ordre décroissant + sol
+  const cibles=profil.map(p=>p.z).filter(z=>z<z0-1).sort((a,b)=>b-a);
+  cibles.push(SOL);
+
+  // Combos : balle × facteur vent (3 × 3 = 9 par défaut)
+  const ventFacts=[1-VENT_PERTURB, 1, 1+VENT_PERTURB];
+  const combos=[];
+  for (const b of BALLES) for (const vF of ventFacts)
+    combos.push({Cd0:b.Cd0, cdType:b.cdType, m:b.m*1e-3, vF});
+
+  const res={
+    enveloppes:[{z:z0, poly:etats.map(s=>[s[0],s[1]])}],
+    profil, heure, ptMesure, zMax:z0, xExpl:x0, yExpl:y0, aireSol:0,
+    qnh, hr, rad_sw:meteoCache.rad_sw, nuage:meteoCache.nuage,
+    u10:meteoCache.u10
+  };
+  carte.resultat=res;
+  cadrerInitial(res);
+  render();
+  await yieldUI();
+
+  let tFirst=0, tLast=0;
+
+  for (let iC=0;iC<cibles.length;iC++){
+    const zC=cibles[iC];
+    if (statusCb) statusCb(
+      `couche ${iC+1}/${cibles.length} · ${(zC/1000).toFixed(1)} km`+
+      ` [${N_WORKERS}w]`
+    );
+    // Construction du lot de tâches : embarrassingly parallel
+    const tasks=[];
+    for (const sIn of etats) for (const cb of combos)
+      tasks.push({sIn:sIn.slice(), zTarget:zC, Cd0:cb.Cd0, cdType:cb.cdType, m:cb.m, ventF:cb.vF});
+
+    // Exécution parallèle + réduction par coque convexe
+    const newEtats=await runLayerParallel(tasks, profil, siteLat, hrSolReel);
+
+    // FIX : éliminer les états NaN/Infini avant le hull.
+    // Des NaN résiduels (couches dupliquées, pas adaptatif dégénéré) font
+    // déraper convexHullIdx (comparaisons NaN=faux → hull=tous les points)
+    // et explosent le nombre de tâches (×9 par couche) jusqu'au stack overflow.
+    const sains=newEtats.filter(s=>isFinite(s[0])&&isFinite(s[1])&&isFinite(s[2]));
+    const newEtatsOk = sains.length >= 3 ? sains : newEtats; // sécurité : garder tout si trop peu
+
+    // À la couche sol : min/max sur TOUTES les trajectoires (pas seulement la coque).
+    // Le grain le plus rapide peut ne pas être à l'extrémité géométrique de l'enveloppe.
+    // reduce() au lieu de spread pour éviter RangeError sur grands tableaux.
+    if (iC===cibles.length-1){
+      tFirst=newEtatsOk.reduce((m,s)=>s[6]<m?s[6]:m, Infinity);
+      tLast =newEtatsOk.reduce((m,s)=>s[6]>m?s[6]:m,-Infinity);
+    }
+
+    const xy=newEtatsOk.map(s=>[s[0],s[1]]);
+    const idxs=convexHullIdx(xy);
+    etats=idxs.map(i=>newEtatsOk[i]);
+
+    res.enveloppes.push({z:zC, poly:etats.map(s=>[s[0],s[1]])});
+    render();
+    await yieldUI();
+  }
+
+  res.aireSol=airePoly(res.enveloppes[res.enveloppes.length-1].poly);
+  return {res, dt:((performance.now()-t0)/1000).toFixed(1), tFirst, tLast};
+}
+
+/* ============================================================
+   WATCHDOG — timeout sur le calcul balistique
+   Le navigateur gère déjà le freeze via son propre mécanisme
+   ("cette page ralentit..."). Ce watchdog est complémentaire :
+   il rejette proprement la promesse et réactive le bouton si le
+   calcul dépasse WATCHDOG_MS, sans tuer les Workers.
+   Valeur : 3 min couvre les cas extrêmes (haute altitude, peu de cœurs).
+============================================================ */
+const WATCHDOG_MS = 3 * 60 * 1000;
+
+async function simulerAvecWatchdog(z0, statusCb){
+  let timer;
+  const watchdog = new Promise((_,reject)=>{
+    timer = setTimeout(()=>reject(new Error(
+      'Calcul interrompu après 3 min — altitude trop élevée ou machine trop lente.'
+    )), WATCHDOG_MS);
+  });
+  try {
+    return await Promise.race([simuler(z0, statusCb), watchdog]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const carte={
+  lat:SITE.lat, lon:SITE.lon, zoom:9,
+  cnv:document.getElementById('map'), ctx:null, w:0, h:0,
+  tuiles:new Map(), resultat:null
+};
+carte.ctx=carte.cnv.getContext('2d');
+
+/* ============================================================
+   LIMITES CONNUES ET HYPOTHÈSES SIMPLIFICATRICES
+   ─ Documentées pour la maintenance et la revue de code.
+   ─ Ces limites sont connues, acceptées et n'invalident pas
+     l'outil pour son usage opérationnel.
+
+   BALISTIQUE
+   1. Vent > 50 hPa (~20 km) : extrapolation par la dernière valeur.
+      Pour z0 > 20 km le transport en haute stratosphère est approché.
+      Sans radiosondage haute altitude, non améliorable.
+   2. Pas de vent vertical : négligeable pour la balistique à haute
+      vitesse initiale. PG inclut les échanges verticaux via σ_z(x).
+
+   DISPERSION GAZEUSE
+   3. F_LOFT = 0.25 : fraction HCl aspirée par la boule de feu.
+      Valeur estimée, non mesurée. Paramètre nommé et modifiable.
+   4. Vent moyen 0→H pour le puff : le cisaillement vertical est
+      marginal pour les distances et altitudes considérées.
+   5. PG calibré < 10-20 km : σ_z peut dépasser la hauteur de
+      mélange au-delà. Acceptable pour les zones balistiques proches.
+
+   SÉCURITÉ INFORMATIQUE
+   6. Blob URL Workers : architecture fichier unique, nécessaire.
+      La CSP restreint les connexions à open-meteo et les images aux
+      tuiles Esri (server.arcgisonline.com) uniquement.
+   7. Validation météo : vent > 150 km/h → erreur explicite.
+      Valeurs null → niveaux filtrés silencieusement.
+============================================================ */
+
+function lonToWX(lon,z){ return (lon+180)/360*256*Math.pow(2,z); }
+function latToWY(lat,z){
+  const r=lat*Math.PI/180;
+  return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*256*Math.pow(2,z);
+}
+function wxToLon(wx,z){ return wx/(256*Math.pow(2,z))*360-180; }
+function wyToLat(wy,z){
+  const n=Math.PI-2*Math.PI*wy/(256*Math.pow(2,z));
+  return 180/Math.PI*Math.atan(0.5*(Math.exp(n)-Math.exp(-n)));
+}
+function geoToPix(lat,lon){
+  const z=carte.zoom;
+  const wxC=lonToWX(carte.lon,z), wyC=latToWY(carte.lat,z);
+  return [carte.w/2+(lonToWX(lon,z)-wxC), carte.h/2+(latToWY(lat,z)-wyC)];
+}
+function pixToGeo(px,py){
+  const z=carte.zoom;
+  const wxC=lonToWX(carte.lon,z), wyC=latToWY(carte.lat,z);
+  return [wyToLat(wyC+(py-carte.h/2),z), wxToLon(wxC+(px-carte.w/2),z)];
+}
+/* Conversion déplacement métrique local → coordonnées géographiques.
+   Formule sphérique directe (problème de Vincenty simplifié sphère).
+   Remplace l'approximation cartésienne plate qui accumule une erreur
+   significative pour des dispersions > ~100 km ou à haute latitude.
+   dxE = déplacement vers l'Est (m), dyN = vers le Nord (m). */
+function metToGeo(dxE, dyN){
+  const R   = 6371000;
+  const lat0 = SITE.lat*Math.PI/180;
+  const lon0 = SITE.lon*Math.PI/180;
+  const d    = Math.hypot(dxE, dyN);
+  if (d < 1e-6) return [SITE.lat, SITE.lon];
+  const brg  = Math.atan2(dxE, dyN);      // azimut géographique (0=Nord, 90=Est)
+  const ang  = d/R;                         // distance angulaire (rad)
+  const lat1 = Math.asin(
+    Math.sin(lat0)*Math.cos(ang) + Math.cos(lat0)*Math.sin(ang)*Math.cos(brg)
+  );
+  const lon1 = lon0 + Math.atan2(
+    Math.sin(brg)*Math.sin(ang)*Math.cos(lat0),
+    Math.cos(ang) - Math.sin(lat0)*Math.sin(lat1)
+  );
+  return [lat1*180/Math.PI, lon1*180/Math.PI];
+}
+
+/* Interpolation vent dans le profil météo (thread principal). */
+function ventMain(z, profil){
+  if (!profil||!profil.length) return {wx:0,wy:0};
+  if (z<=profil[0].z) return {wx:profil[0].wx, wy:profil[0].wy};
+  const N=profil.length;
+  if (z>=profil[N-1].z) return {wx:profil[N-1].wx, wy:profil[N-1].wy};
+  for (let i=0;i<N-1;i++){
+    if (z>=profil[i].z && z<profil[i+1].z){
+      const dz=profil[i+1].z-profil[i].z;
+      const t=dz===0?0:(z-profil[i].z)/dz;
+      return {wx:profil[i].wx+t*(profil[i+1].wx-profil[i].wx),
+              wy:profil[i].wy+t*(profil[i+1].wy-profil[i].wy)};
+    }
+  }
+  return {wx:profil[N-1].wx, wy:profil[N-1].wy};
+}
+
+/* Fond de carte sans clé ni API : imagerie Esri World Imagery puis
+   étiquettes Esri (frontières, lieux) par-dessus. Zoom natif ≤ 17.
+   Chargement paresseux avec cache (TUILES_MAX tuiles, les plus anciennes
+   sont retirées). */
+const COUCHES = [
+  { id:'img', alpha:1,
+    url:(z,x,y)=>`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}` },
+  { id:'lbl', alpha:0.9,
+    url:(z,x,y)=>`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}` }
+];
+const TUILES_MAX = 600;
+function getTile(couche,z,x,y){
+  const k=`${couche.id}/${z}/${x}/${y}`;
+  let t=carte.tuiles.get(k);
+  if (t) return t;
+  t={img:new Image(), ok:false};
+  t.img.crossOrigin='anonymous';
+  t.img.onload=()=>{ t.ok=true; render(); };
+  t.img.onerror=()=>{ t.ok=false; };
+  t.img.src=couche.url(z,((x%(1<<z))+(1<<z))%(1<<z),y);
+  carte.tuiles.set(k,t);
+  if (carte.tuiles.size>TUILES_MAX) carte.tuiles.delete(carte.tuiles.keys().next().value);
+  return t;
+}
+
+/* Palette altitude : bleu (bas) → rouge (haut). */
+function couleurAlt(z,zmax){
+  const t=Math.min(1,Math.max(0,z/Math.max(zmax,1)));
+  return `hsl(${240-240*t},85%,${50+10*t}%)`;
+}
+
+/* ============================================================
+   BARBULES MÉTÉOROLOGIQUES (convention WMO)
+   Hampe = direction d'où vient le vent.
+   ─ fanion triangulaire = 50 kt
+   ─ barbe longue        = 10 kt
+   ─ demi-barbe          = 5 kt
+   ─ cercle vide         = calme (< 5 kt)
+============================================================ */
+function barbule(ctx,x0,y0,dirVient,vitesseMS,couleur){
+  let kt=Math.round(vitesseMS*1.94384/5)*5;
+  const L=28, dx=Math.sin(dirVient), dy=-Math.cos(dirVient);
+  const xF=x0+dx*L, yF=y0+dy*L, px=-dy, py=dx;
+  ctx.strokeStyle=couleur; ctx.fillStyle=couleur; ctx.lineWidth=1.6; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(xF,yF); ctx.stroke();
+  if (kt<5){ ctx.beginPath(); ctx.arc(x0,y0,3,0,2*Math.PI); ctx.stroke(); return; }
+  const PAS=6,LB=9; let pos=0,posaT=false;
+  while(kt>=50){
+    const xa=xF-dx*pos,ya=yF-dy*pos,xb=xF-dx*(pos+PAS),yb=yF-dy*(pos+PAS);
+    ctx.beginPath(); ctx.moveTo(xa,ya); ctx.lineTo(xb+px*LB,yb+py*LB); ctx.lineTo(xb,yb); ctx.closePath(); ctx.fill();
+    pos+=PAS; kt-=50; posaT=true;
+  }
+  if (posaT) pos+=2;
+  while(kt>=10){
+    const xa=xF-dx*pos,ya=yF-dy*pos;
+    ctx.beginPath(); ctx.moveTo(xa,ya); ctx.lineTo(xa+px*LB-dx*PAS*0.6,ya+py*LB-dy*PAS*0.6); ctx.stroke();
+    pos+=PAS; kt-=10;
+  }
+  if (kt>=5){
+    if (pos===0) pos=PAS;
+    const xa=xF-dx*pos,ya=yF-dy*pos;
+    ctx.beginPath(); ctx.moveTo(xa,ya); ctx.lineTo(xa+px*(LB*.5)-dx*PAS*.3,ya+py*(LB*.5)-dy*PAS*.3); ctx.stroke();
+  }
+}
+
+/* ============================================================
+   RENDU CANVAS
+============================================================ */
+function render(){
+  const ctx=carte.ctx,W=carte.w,H=carte.h,z=carte.zoom;
+  ctx.fillStyle='#0e1418'; ctx.fillRect(0,0,W,H);
+  const wxC=lonToWX(carte.lon,z),wyC=latToWY(carte.lat,z);
+  const wx0=wxC-W/2,wy0=wyC-H/2,N=1<<z;
+  const tx0=Math.floor(wx0/256),ty0=Math.floor(wy0/256);
+  const tx1=Math.floor((wxC+W/2)/256),ty1=Math.floor((wyC+H/2)/256);
+  for (const couche of COUCHES){
+    ctx.globalAlpha=couche.alpha;
+    for (let tx=tx0;tx<=tx1;tx++) for (let ty=ty0;ty<=ty1;ty++){
+      if (ty<0||ty>=N) continue;
+      const t=getTile(couche,z,((tx%N)+N)%N,ty);
+      if (t.ok) ctx.drawImage(t.img,tx*256-wx0,ty*256-wy0);
+    }
+  }
+  ctx.globalAlpha=1;
+  // Assombrissement léger pour la lisibilité des enveloppes et barbules
+  ctx.fillStyle='rgba(14,20,24,0.2)'; ctx.fillRect(0,0,W,H);
+  const [kx,ky]=geoToPix(SITE.lat,SITE.lon);
+  ctx.strokeStyle='#f0a63a'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(kx,ky,6,0,2*Math.PI); ctx.stroke();
+  ctx.fillStyle='#f0a63a';
+  ctx.beginPath(); ctx.arc(kx,ky,2,0,2*Math.PI); ctx.fill();
+  ctx.font='bold 12px ui-monospace,monospace';
+  ctx.fillStyle='#000'; ctx.fillText(SITE.nom,kx+9,ky-5);
+  ctx.fillStyle='#fff'; ctx.fillText(SITE.nom,kx+8,ky-6);
+  if (carte.resultat){ renderEnveloppes(); renderBarbules(); }
+  renderPuffIsoline();
+}
+
+function polyEnPix(poly){
+  return poly.map(([x,y])=>{const [lat,lon]=metToGeo(x,y);return geoToPix(lat,lon);});
+}
+function renderEnveloppes(){
+  const ctx=carte.ctx,{enveloppes,zMax,xExpl,yExpl}=carte.resultat;
+  for (let i=0;i<enveloppes.length;i++){
+    const env=enveloppes[i];
+    const isSol=(i===enveloppes.length-1)&&env.z<=SOL;
+    const px=polyEnPix(env.poly);
+    if (px.length<3) continue;
+    const col=couleurAlt(env.z,Math.max(zMax,1));
+    const colA=col.replace('hsl','hsla').replace(')',`,${isSol?.30:.08})`);
+    ctx.beginPath(); ctx.moveTo(px[0][0],px[0][1]);
+    for (let k=1;k<px.length;k++) ctx.lineTo(px[k][0],px[k][1]);
+    ctx.closePath(); ctx.fillStyle=colA; ctx.strokeStyle=col;
+    ctx.lineWidth=isSol?2.4:1.0;
+    if (!isSol) ctx.setLineDash([3,2]);
+    ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+    if (!isSol){
+      // reduce() au lieu de spread : Math.min(...grandsTableaux) fait sauter la pile
+      const yMin=px.reduce((m,p)=>p[1]<m?p[1]:m, Infinity);
+      const top=px.find(p=>p[1]===yMin);
+      // CORRECTION 3 : vérifie que 'top' existe avant de lire top[0]
+      if (top) {
+        ctx.font='10px ui-monospace,monospace'; ctx.fillStyle=col;
+        ctx.fillText((env.z/1000).toFixed(1)+' km',top[0]+4,yMin-3);
+      }
+    }
+  }
+  const last=enveloppes[enveloppes.length-1];
+  if (last.z<=SOL){
+    const lp=polyEnPix(last.poly);
+    if (lp.length>2){
+      const cx=lp.reduce((a,p)=>a+p[0],0)/lp.length;
+      const cy=lp.reduce((a,p)=>a+p[1],0)/lp.length;
+      ctx.font='bold 12px ui-monospace,monospace';
+      ctx.fillStyle='#000'; ctx.fillText('IMPACT SOL',cx-32,cy-5);
+      ctx.fillStyle='#fff'; ctx.fillText('IMPACT SOL',cx-33,cy-6);
+    }
+  }
+  // concentrations polluants : affichées via renderPuffIsoline (nouveau modèle)
+  const [kx,ky]=geoToPix(SITE.lat,SITE.lon);
+  const [eLat,eLon]=metToGeo(xExpl,yExpl);
+  const [ex,ey]=geoToPix(eLat,eLon);
+  ctx.setLineDash([2,3]); ctx.strokeStyle='rgba(160,255,180,0.7)'; ctx.lineWidth=1.2;
+  ctx.beginPath(); ctx.moveTo(kx,ky); ctx.lineTo(ex,ey); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='#a0ffb4'; ctx.strokeStyle='#000'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(ex,ey,4,0,2*Math.PI); ctx.fill(); ctx.stroke();
+  ctx.font='11px ui-monospace,monospace';
+  ctx.fillStyle='#000'; ctx.fillText('explosion',ex+7,ey-5);
+  ctx.fillStyle='#a0ffb4'; ctx.fillText('explosion',ex+6,ey-6);
+}
+function renderBarbules(){
+  const ctx=carte.ctx,{profil,ptMesure,zMax}=carte.resultat;
+  const [mx,my]=geoToPix(ptMesure.lat,ptMesure.lon);
+  ctx.strokeStyle='#5cc8d6'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(mx,my,4,0,2*Math.PI); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mx-6,my); ctx.lineTo(mx+6,my);
+  ctx.moveTo(mx,my-6); ctx.lineTo(mx,my+6); ctx.stroke();
+  ctx.font='11px ui-monospace,monospace';
+  ctx.fillStyle='#000'; ctx.fillText('point météo',mx+8,my-7);
+  ctx.fillStyle='#5cc8d6'; ctx.fillText('point météo',mx+7,my-8);
+
+  const niv=profil.filter(p=>p.z<=zMax+500);
+  if (!niv.length) return;
+
+  // Colonne verticale : barbules empilées, 38px par ligne, ancrée sous le repère
+  const STEP=38, X=mx, Y0=my+20;
+  niv.forEach((p,i)=>{
+    const col=couleurAlt(p.z,Math.max(zMax,1));
+    const y=Y0+i*STEP;
+    // Barbule centrée sur (X, y)
+    barbule(ctx, X, y, p.dir*Math.PI/180, p.v, col);
+    // Label altitude + vitesse à droite
+    ctx.font='10px ui-monospace,monospace';
+    ctx.fillStyle='rgba(0,0,0,0.6)';
+    ctx.fillText(`${Math.round(p.z/100)/10}km ${p.v.toFixed(0)}m/s`, X+36, y+4);
+    ctx.fillStyle=col;
+    ctx.fillText(`${Math.round(p.z/100)/10}km ${p.v.toFixed(0)}m/s`, X+35, y+3);
+  });
+}
+
+/* Affiche un cadre de concentrations polluants ancré sur le
+   point le plus au nord-est de l'enveloppe sol (frontière). */
+function renderConc(ctx, lastEnv, conc){
+  const lp = polyEnPix(lastEnv.poly);
+  if (lp.length < 3) return;
+  // Point le plus haut (yMin = nord) de l'enveloppe
+  let bestIdx=0, yBest=Infinity;
+  lp.forEach((p,i)=>{ if(p[1]<yBest){yBest=p[1];bestIdx=i;} });
+  const [bx,by] = lp[bestIdx];
+
+  const pad=6, lh=14, W=190, rows=3;
+  const bxBox = bx+12, byBox = by-rows*lh-pad*2-6;
+  const W2=260;
+
+  // Fond semi-transparent
+  ctx.fillStyle='rgba(14,20,24,0.86)';
+  ctx.strokeStyle='rgba(240,166,58,0.6)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.roundRect(bxBox,byBox,W2,rows*lh+pad*2+14,3);
+  ctx.fill(); ctx.stroke();
+
+  ctx.font='bold 10px ui-monospace,monospace';
+  ctx.fillStyle='#f0a63a';
+  const xkm = conc.x_star_km ? Math.round(conc.x_star_km)+' km' : '?';
+  ctx.fillText('POLLUANTS · C_MAX SOL @ '+xkm+' (source élev.)', bxBox+pad, byBox+pad+8);
+
+  ctx.font='10px ui-monospace,monospace';
+  const seuils = [
+    { nom:'HCl  ', val:conc.HCl,   a1:P120C.HCl_AEGL1, a2:P120C.HCl_AEGL2,  ref:'AEGL-1: '+P120C.HCl_AEGL1 },
+    { nom:'Al₂O₃', val:conc.Al2O3, a1:P120C.Al_TLV,    a2:P120C.Al_TLV*10,  ref:'TLV: '+P120C.Al_TLV },
+    { nom:'NO₂  ', val:conc.NO2,   a1:P120C.NO2_AEGL1,  a2:P120C.NO2_AEGL2, ref:'AEGL-1: '+P120C.NO2_AEGL1 },
+  ];
+  seuils.forEach((s,i)=>{
+    const y = byBox+pad+20+i*lh;
+    const col = s.val>=s.a2 ? '#f85149' : s.val>=s.a1 ? '#d29922' : '#3fb950';
+    ctx.fillStyle=col; ctx.fillText('●', bxBox+pad, y);
+    ctx.fillStyle='#dfe7ec';
+    const valStr = s.val >= 0.01
+      ? s.val.toFixed(2)+' mg/m³'
+      : (s.val*1000).toFixed(2)+' µg/m³';
+    ctx.fillText(s.nom+' '+valStr, bxBox+pad+10, y);
+    ctx.fillStyle='#8fa1ad';
+    ctx.fillText('['+s.ref+']', bxBox+pad+10+100, y);
+  });
+}
+
+/* Zone balayée — enveloppe convexe des cercles r(t) entre t_touch et t_end.
+   Croix toutes les 15min depuis l'explosion avec label et concentration. */
+function renderPuffIsoline(){
+  const puff=carte.puff;
+  if (!puff) return;
+  const ctx=carte.ctx;
+  const fmtC = v => v>=0.01 ? v.toFixed(2)+'mg/m³' : (v*1000).toFixed(1)+'µg/m³';
+
+  // ── Haricot : zone balayée entre t_touch et t_end ──
+  if (!puff.noBreach){
+    const s = puff.seuil;
+    const N_T=40, N_A=24;
+    const pts=[];
+    for (let it=0;it<=N_T;it++){
+      const t=puff.t_touch+it*(puff.t_end-puff.t_touch)/N_T;
+      const Cm=puff._Cmax(t);
+      if (Cm<=s) continue;
+      const r=puff._sy(t)*Math.sqrt(-2*Math.log(s/Cm));
+      if (r<1) continue;
+      const xc=puff.x_dep+puff.wx_moy*t, yc=puff.y_dep+puff.wy_moy*t;
+      for (let ia=0;ia<N_A;ia++){
+        const a=2*Math.PI*ia/N_A;
+        pts.push([xc+r*Math.cos(a), yc+r*Math.sin(a)]);
+      }
+    }
+    if (pts.length>=3){
+      const hull=convexHullIdx(pts);
+      const px=hull.map(i=>{ const [la,lo]=metToGeo(pts[i][0],pts[i][1]); return geoToPix(la,lo); });
+      ctx.beginPath(); ctx.moveTo(px[0][0],px[0][1]);
+      for (let k=1;k<px.length;k++) ctx.lineTo(px[k][0],px[k][1]);
+      ctx.closePath();
+      ctx.fillStyle='rgba(248,81,73,0.12)'; ctx.fill();
+      ctx.strokeStyle='#f85149'; ctx.lineWidth=2.5; ctx.setLineDash([6,3]);
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+
+  // ── Croix toutes les 15min de t=0 à t_end (ou 6h max) ──
+  const T_MAX = puff.noBreach ? Math.min(puff.t_peak*2, 6*3600) : puff.t_end;
+  const STEP  = 15*60; // 15 minutes
+  for (let t=STEP; t<=T_MAX+1; t+=STEP){
+    const xc=puff.x_dep+puff.wx_moy*t, yc=puff.y_dep+puff.wy_moy*t;
+    const [la,lo]=metToGeo(xc,yc); const [cx,cy]=geoToPix(la,lo);
+    const Cm = puff._Ccentre ? puff._Ccentre(t) : puff._Cmax(t);
+    const aboveSeuil = !puff.noBreach && puff._Cmax(t) > (puff.seuil||0);
+    const col = aboveSeuil ? '#f85149' : '#333';
+    const colTxt = aboveSeuil ? '#f85149' : '#555';
+    // Croix
+    ctx.strokeStyle=col; ctx.lineWidth=aboveSeuil?2:1.5;
+    ctx.beginPath(); ctx.moveTo(cx-6,cy); ctx.lineTo(cx+6,cy);
+    ctx.moveTo(cx,cy-6); ctx.lineTo(cx,cy+6); ctx.stroke();
+    // Label +Xmin + concentration
+    const hh=Math.floor(t/3600), mm=String(Math.floor((t%3600)/60)).padStart(2,'0');
+    const lbl = (hh>0?'+'+hh+'h':'+') +mm+'  '+fmtC(Cm);
+    ctx.font='9px ui-monospace,monospace';
+    ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.fillText(lbl,cx+8,cy+4);
+    ctx.fillStyle=colTxt;                  ctx.fillText(lbl,cx+7,cy+3);
+  }
+}
+
+/* ============================================================
+   PAN / ZOOM
+============================================================ */
+let drag=null;
+carte.cnv.addEventListener('mousedown',e=>{
+  drag={x:e.clientX,y:e.clientY,lat:carte.lat,lon:carte.lon};
+  carte.cnv.classList.add('drag');
+});
+window.addEventListener('mouseup',()=>{drag=null;carte.cnv.classList.remove('drag');});
+window.addEventListener('mousemove',e=>{
+  if (!drag) return;
+  const z=carte.zoom;
+  carte.lon=wxToLon(lonToWX(drag.lon,z)-(e.clientX-drag.x),z);
+  carte.lat=wyToLat(latToWY(drag.lat,z)-(e.clientY-drag.y),z);
+  render();
+});
+carte.cnv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const rect=carte.cnv.getBoundingClientRect();
+  const px=e.clientX-rect.left,py=e.clientY-rect.top;
+  const [latU,lonU]=pixToGeo(px,py);
+  const newZ=Math.max(3,Math.min(17,carte.zoom+(e.deltaY<0?1:-1)));
+  if (newZ===carte.zoom) return;
+  carte.zoom=newZ;
+  const wxU=lonToWX(lonU,newZ),wyU=latToWY(latU,newZ);
+  carte.lon=wxToLon(wxU-(px-carte.w/2),newZ);
+  carte.lat=wyToLat(wyU-(py-carte.h/2),newZ);
+  render();
+},{passive:false});
+
+/* Touch : pan + pinch-to-zoom */
+let touch1=null, touch2=null, pinchDist0=null, zoom0=null;
+
+function touchDist(a,b){return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);}
+function touchMid(a,b){return {x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2};}
+
+carte.cnv.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(e.touches.length===1){
+    touch1={x:e.touches[0].clientX,y:e.touches[0].clientY,lat:carte.lat,lon:carte.lon};
+    touch2=null; pinchDist0=null;
+  } else if(e.touches.length===2){
+    touch1=null;
+    pinchDist0=touchDist(e.touches[0],e.touches[1]);
+    zoom0=carte.zoom;
+    const mid=touchMid(e.touches[0],e.touches[1]);
+    const rect=carte.cnv.getBoundingClientRect();
+    touch2={mx:mid.x-rect.left,my:mid.y-rect.top,...pixToGeoObj(mid.x-rect.left,mid.y-rect.top)};
+  }
+},{passive:false});
+
+carte.cnv.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(e.touches.length===1 && touch1){
+    const z=carte.zoom;
+    carte.lon=wxToLon(lonToWX(touch1.lon,z)-(e.touches[0].clientX-touch1.x),z);
+    carte.lat=wyToLat(latToWY(touch1.lat,z)-(e.touches[0].clientY-touch1.y),z);
+    render();
+  } else if(e.touches.length===2 && pinchDist0!==null){
+    const d=touchDist(e.touches[0],e.touches[1]);
+    const ratio=Math.log2(d/pinchDist0);
+    const newZ=Math.max(3,Math.min(17,Math.round(zoom0+ratio)));
+    const mid=touchMid(e.touches[0],e.touches[1]);
+    const rect=carte.cnv.getBoundingClientRect();
+    const px=mid.x-rect.left,py=mid.y-rect.top;
+    if(newZ!==carte.zoom){
+      carte.zoom=newZ;
+      const wxU=lonToWX(touch2.lon,newZ),wyU=latToWY(touch2.lat,newZ);
+      carte.lon=wxToLon(wxU-(touch2.mx-carte.w/2),newZ);
+      carte.lat=wyToLat(wyU-(touch2.my-carte.h/2),newZ);
+    }
+    render();
+  }
+},{passive:false});
+
+carte.cnv.addEventListener('touchend',e=>{
+  if(e.touches.length===0){touch1=null;touch2=null;pinchDist0=null;}
+  else if(e.touches.length===1){
+    touch1={x:e.touches[0].clientX,y:e.touches[0].clientY,lat:carte.lat,lon:carte.lon};
+    touch2=null;pinchDist0=null;
+  }
+},{passive:false});
+
+function pixToGeoObj(px,py){const [lat,lon]=pixToGeo(px,py);return {lat,lon};}
+
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  carte.cnv.width=innerWidth*dpr; carte.cnv.height=innerHeight*dpr;
+  carte.cnv.style.width=innerWidth+'px'; carte.cnv.style.height=innerHeight+'px';
+  carte.ctx.setTransform(dpr,0,0,dpr,0,0);
+  carte.w=innerWidth; carte.h=innerHeight; render();
+}
+addEventListener('resize',resize); resize();
+
+/* Cadrage initial estimé (vent moyen × temps de chute).
+   But : cadrer une seule fois avant calcul, pas après chaque couche. */
+function cadrerInitial(res){
+  const {profil,zMax,xExpl,yExpl}=res;
+  let vmx=0,vmy=0,n=0;
+  for (const p of profil) if (p.z<=zMax){vmx+=p.wx;vmy+=p.wy;n++;}
+  if (n>0){vmx/=n;vmy/=n;}
+  const tChute=Math.max(zMax/9,60);
+  const xs=[0,xExpl,xExpl+vmx*tChute,xExpl-vmx*tChute];
+  const ys=[0,yExpl,yExpl+vmy*tChute,yExpl-vmy*tChute];
+  const xmin=Math.min(...xs),xmax=Math.max(...xs);
+  const ymin=Math.min(...ys),ymax=Math.max(...ys);
+  const cx=(xmin+xmax)/2,cy=(ymin+ymax)/2;
+  const rM=Math.max(xmax-xmin,ymax-ymin)/2+4000;
+  const cosLat=Math.cos(SITE.lat*Math.PI/180);
+  carte.zoom=Math.max(7,Math.min(14,Math.floor(Math.log2(156543.03*cosLat*Math.min(carte.w,carte.h)*0.42/rM))));
+  const [cLat,cLon]=metToGeo(cx,cy);
+  carte.lat=cLat; carte.lon=cLon;
+}
+
+/* ============================================================
+   LÉGENDE
+============================================================ */
+function rendrePaletteAlt(zMax){
+  const c=document.createElement('canvas'); c.width=180; c.height=14;
+  const ctx=c.getContext('2d');
+  for (let x=0;x<c.width;x++){
+    ctx.fillStyle=couleurAlt(x/(c.width-1)*zMax,zMax);
+    ctx.fillRect(x,0,1,c.height);
+  }
+  return c.toDataURL();
+}
+
+/* ============================================================
+   UI
+============================================================ */
+/* Peuplement du select PG */
+(function(){
+  const sel = document.getElementById('pgClasse');
+  sel.innerHTML = '<option value="AUTO">AUTO · calculé depuis météo réelle</option>'
+    + Object.entries(PG_CLASSES).map(([k,v])=>
+      `<option value="${k}">${k} · ${v.label.split('(')[0].trim()}</option>`
+    ).join('');
+  sel.value = 'AUTO';
+})();
+document.getElementById('pgClasse').onchange = () => {};  // lecture au clic sur Calculer
+
+/* Peuplement du <select> avec optgroups */
+(function(){
+  const sel = document.getElementById('pas');
+  sel.innerHTML = GROUPES_PAS.map(groupe => {
+    const pads = Object.entries(PAS_TIRS).filter(([,v]) => v.groupe === groupe);
+    if (!pads.length) return '';
+    const opts = pads.map(([k,v]) =>
+      `<option value="${k}">${v.nom} · ${v.lanceur} · az.${v.azimut}°</option>`
+    ).join('');
+    return `<optgroup label="${groupe}">${opts}</optgroup>`;
+  }).join('');
+  sel.value = 'ELA-4';
+})();
+
+/* Mise à jour du sous-titre h1 */
+function majSousTitre(){
+  document.getElementById('h1sub').textContent =
+    `${SITE.nom} · ${SITE.lanceur} · azimut ${SITE.azimut}°`;
+}
+majSousTitre();
+
+function lier(idR,idN,cb){
+  const r=document.getElementById(idR),n=document.getElementById(idN);
+  const sync=v=>{n.value=r.value=v;cb&&cb(+v);};
+  r.oninput=()=>sync(r.value); n.oninput=()=>sync(n.value);
+}
+function majAuto(h){
+  const a=ariane(+h);
+  document.getElementById('vAuto').textContent=a.v.toFixed(0)+' m/s';
+  document.getElementById('pAuto').textContent=(a.pitch*180/Math.PI).toFixed(0)+'°';
+}
+lier('alt','altN',majAuto);
+majAuto(document.getElementById('alt').value);
+
+(function(){
+  const tb=document.querySelector('#tblBalles tbody');
+  tb.innerHTML=BALLES.map(b=>
+    `<tr><td>${b.nom}</td><td>${b.Cd0.toFixed(2)}</td><td>${b.m.toFixed(1)}</td></tr>`
+  ).join('');
+})();
+
+document.getElementById('pas').onchange=e=>{
+  SITE   = PAS_TIRS[e.target.value];
+  AZIMUT = SITE.azimut * Math.PI / 180;
+  carte.lat=SITE.lat; carte.lon=SITE.lon; carte.zoom=9;
+  carte.resultat=null; carte.puff=null; meteoCache=null;
+  document.getElementById('stats').style.display='none';
+  document.getElementById('statsPoll').style.display='none';
+  document.getElementById('statsPuff').style.display='none';
+  majSousTitre();
+  render();
+};
+document.getElementById('reload').onclick=async()=>{
+  const st=document.getElementById('status');
+  st.textContent='rechargement météo…';
+  try{
+    await getMeteo(true);
+    st.textContent='météo rafraîchie · '+meteoCache.heure.slice(0,16);
+  }catch(err){st.textContent='Erreur : '+err.message;}
+};
+document.getElementById('run').onclick=async()=>{
+  const btn=document.getElementById('run'),st=document.getElementById('status');
+  btn.disabled=true;
+  try{
+    const z0=+document.getElementById('alt').value;
+    const {res,dt,tFirst,tLast}=await simulerAvecWatchdog(z0,msg=>st.textContent=msg);
+    const sol=res.enveloppes[res.enveloppes.length-1].poly;
+    const azs=sol.map(([x,y])=>(Math.atan2(x,y)*180/Math.PI+360)%360);
+    let azMin=azs[0],azMax=azs[0];
+    azs.forEach(a=>{if(a<azMin)azMin=a;if(a>azMax)azMax=a;});
+    const fmt=s=>{const m=Math.floor(s/60);return `${m} min ${Math.round(s%60)} s`;};
+    document.getElementById('stats').style.display='flex';
+    document.getElementById('sAz').textContent    =azMin.toFixed(0)+'° – '+azMax.toFixed(0)+'°';
+    document.getElementById('sAire').textContent  =(res.aireSol/1e6).toFixed(2);
+    document.getElementById('sTFirst').textContent=fmt(tFirst);
+    document.getElementById('sTLast').textContent =fmt(tLast);
+    document.getElementById('sMet').textContent   = res.heure.slice(0,16);
+    document.getElementById('sQnh').textContent   = res.qnh   != null ? res.qnh.toFixed(1)       : '—';
+    document.getElementById('sHr').textContent    = res.hr    != null ? Math.round(res.hr)+' %'  : '—';
+    document.getElementById('sRad').textContent   = res.rad_sw!= null ? Math.round(res.rad_sw)   : '—';
+    document.getElementById('sNuage').textContent = res.nuage != null ? Math.round(res.nuage)+' %': '—';
+    document.getElementById('sU10').textContent   = res.u10   != null ? res.u10.toFixed(1)        : '—';
+    // Classe PG : lire le select, appeler whatIsGifford si AUTO
+    const selVal = document.getElementById('pgClasse').value;
+    const classeActive = selVal === 'AUTO' ? whatIsGifford(res) : selVal;
+    document.getElementById('sPG').textContent = classeActive + (selVal === 'AUTO' ? ' (auto)' : ' (manuel)');
+    document.getElementById('sCalc').textContent  =dt+' s';
+    document.getElementById('sWorkers').textContent=`${N_WORKERS} / ${navigator.hardwareConcurrency||'?'} logiques`;
+    // Propergol restant (info)
+    const conc = concPolluants(z0, res.profil, tLast);
+    res.conc = conc;
+    if (conc){
+      document.getElementById('pProp').textContent =
+        conc.m_rest_t.toFixed(1)+' t ('+Math.round((1-conc.frac_burned)*100)+'% restant)';
+      document.getElementById('statsPoll').style.display='flex';
+    } else {
+      document.getElementById('statsPoll').style.display='none';
+    }
+    const puff = puffPG(z0, res.profil, classeActive);
+    res.classeActive = classeActive;
+    carte.puff = puff;
+    const pfDiv = document.getElementById('statsPuff');
+    const fmtH = t=>{const h=Math.floor(t/3600),m=String(Math.floor((t%3600)/60)).padStart(2,'0');return '+'+h+'h'+m;};
+    if (puff){
+      if (!puff.noBreach){
+        // Longueur du haricot = distance centre(t_touch) → centre(t_end) + rayons aux extrémités
+        const xTouch = puff.x_dep + puff.wx_moy*puff.t_touch;
+        const yTouch = puff.y_dep + puff.wy_moy*puff.t_touch;
+        const xEnd   = puff.x_dep + puff.wx_moy*puff.t_end;
+        const yEnd   = puff.y_dep + puff.wy_moy*puff.t_end;
+        const drift  = Math.hypot(xEnd-xTouch, yEnd-yTouch); // m
+        const rTouch = puff._sy(puff.t_touch)*Math.sqrt(-2*Math.log((puff.seuil)/puff._Cmax(puff.t_touch)));
+        const rEnd   = puff._sy(puff.t_end)  *Math.sqrt(-2*Math.log((puff.seuil)/puff._Cmax(puff.t_end)));
+        const longueur = (drift + rTouch + rEnd) / 1000; // km
+        document.getElementById('pfTouch').textContent = fmtH(puff.t_touch);
+        document.getElementById('pfEnd').textContent   = fmtH(puff.t_end);
+        document.getElementById('pfRayon').textContent = (puff.r_aegl1/1000).toFixed(1)+' km large · '+longueur.toFixed(1)+' km long';
+        document.getElementById('pfSeuil').textContent = '—';
+      } else {
+        document.getElementById('pfTouch').textContent = '—';
+        document.getElementById('pfEnd').textContent   = '—';
+        document.getElementById('pfRayon').textContent = '—';
+        document.getElementById('pfSeuil').textContent = puff.z0_seuil
+          ? '< '+puff.z0_seuil+' m'
+          : 'pas de contact sol';
+      }
+      pfDiv.style.display='flex';
+    } else { pfDiv.style.display='none'; }
+    render();
+    st.textContent='OK';
+  }catch(err){
+    st.textContent='Erreur : '+err.message; console.error(err);
+  }finally{btn.disabled=false;}
+};
+</script>
+</body>
+</html>
